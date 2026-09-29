@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Review queue</title>
+<style>
+  :root { --bg:#fafafa; --card:#fff; --ink:#111318; --muted:#70757f; --line:#e6e7eb; --accent:#4f46e5; --ok:#15803d; --bad:#b91c1c; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0e0f13; --card:#16181e; --ink:#eceef3; --muted:#8b909c; --line:#262932; --accent:#818cf8; --ok:#86efac; --bad:#fca5a5; } }
+  * { box-sizing:border-box }
+  body { margin:0; font:15px/1.5 -apple-system, system-ui, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--ink) }
+  header { display:flex; align-items:center; gap:12px; padding:14px 20px; border-bottom:1px solid var(--line) }
+  header h1 { font-size:16px; margin:0; margin-right:auto; font-weight:600 }
+  .tabs button { background:none; border:1px solid var(--line); border-radius:999px; padding:5px 12px; cursor:pointer; color:var(--ink); font:inherit }
+  .tabs button.on { background:var(--ink); color:var(--bg); border-color:var(--ink) }
+  input[type=password] { padding:6px 10px; border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--ink); font:inherit; width:200px }
+  main { max-width:820px; margin:0 auto; padding:16px 20px 60px }
+  .sub { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px 18px; margin-bottom:14px }
+  .sub .top { display:flex; gap:10px; align-items:baseline; flex-wrap:wrap; margin-bottom:8px }
+  .sub .top a { font-weight:600; color:var(--ink); text-decoration:none; font-size:17px }
+  .sub .top small { color:var(--muted) }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(190px, 1fr)); gap:10px; margin:10px 0 }
+  label { display:block; font-size:12px; color:var(--muted); margin-bottom:3px }
+  .grid input, .grid select, .grid textarea { width:100%; padding:7px 9px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); font:inherit }
+  .grid .wide { grid-column:1 / -1 }
+  .check { display:flex; gap:16px; flex-wrap:wrap; font-size:13px; margin:6px 0 }
+  .check label { display:flex; align-items:center; gap:6px; color:var(--ink); font-size:13px; margin:0 }
+  .row { display:flex; gap:8px; align-items:center; margin-top:12px }
+  .btn { border:none; border-radius:999px; padding:8px 16px; cursor:pointer; font:inherit; font-weight:500 }
+  .btn.ok { background:var(--accent); color:#fff } .btn.bad { background:transparent; color:var(--bad); border:1px solid var(--line) }
+  .note { font-size:13px; color:var(--muted); background:var(--bg); border-radius:8px; padding:8px 10px; margin-top:6px }
+  .empty { color:var(--muted); text-align:center; padding:60px 0 }
+  .flash { font-size:13px; color:var(--ok); margin-left:auto }
+</style>
+</head>
+<body>
+<header>
+  <h1>Review queue</h1>
+  <div class="tabs"><button class="on" data-s="pending">Pending</button><button data-s="approved">Approved</button><button data-s="rejected">Rejected</button></div>
+  <input type="password" id="token" placeholder="admin token (if set)" title="Only needed when ADMIN_TOKEN is set on the server">
+</header>
+<main id="list"></main>
+
+<script>
+const $ = s => document.querySelector(s);
+const CATS = ["hackathon","competition","conference","fellowship","research","scholarship","on_campus_job","accelerator","other"];
+const LABELS = ["Apply by","Submissions due","Registration closes","Applications due","Event starts","Rolling"];
+let status = 'pending';
+try { $('#token').value = localStorage.getItem('adminToken') || ''; } catch {}
+$('#token').addEventListener('change', () => { try { localStorage.setItem('adminToken', $('#token').value); } catch {} load(); });
+
+function headers() { const h = {'Content-Type': 'application/json'}; if ($('#token').value) h['X-Admin-Token'] = $('#token').value; return h; }
+const opt = (list, v) => list.map(x => `<option ${x === v ? 'selected' : ''}>${x}</option>`).join('');
+const esc = s => (s ?? '').toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+async function load() {
+  const r = await fetch('/api/admin/submissions?status=' + status, { headers: headers() });
+  if (!r.ok) { $('#list').innerHTML = `<div class="empty">${r.status === 401 ? 'Enter the admin token above.' : 'Admin is localhost-only until ADMIN_TOKEN is set.'}</div>`; return; }
+  const subs = await r.json();
+  if (!subs.length) { $('#list').innerHTML = `<div class="empty">Nothing ${status}.</div>`; return; }
+  $('#list').innerHTML = subs.map(s => {
+    const p = s.payload, ro = status !== 'pending' ? 'disabled' : '';
+    return `<form class="sub" data-id="${s.id}">
+      <div class="top"><a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.title)} ↗</a>
+        <small>#${s.id} · ${s.created_at.slice(0,10)}${s.submitted_by ? ' · ' + esc(s.submitted_by) : ''}</small></div>
+      ${s.note ? `<div class="note">Submitter: ${esc(s.note)}</div>` : ''}
+      ${s.review_note ? `<div class="note">Reviewer: ${esc(s.review_note)}</div>` : ''}
+      <div class="grid">
+        <div class="wide"><label>Title</label><input name="title" value="${esc(p.title)}" ${ro}></div>
+        <div class="wide"><label>URL</label><input name="url" value="${esc(p.url)}" ${ro}></div>
+        <div><label>Type</label><select name="category" ${ro}>${opt(CATS, p.category)}</select></div>
+        <div><label>Organizer</label><input name="organizer" value="${esc(p.organizer)}" ${ro}></div>
+        <div><label>Deadline</label><input name="deadline" type="date" value="${esc(p.deadline)}" ${ro}></div>
+        <div><label>Deadline means</label><select name="deadline_label" ${ro}>${opt(LABELS, p.deadline_label || 'Apply by')}</select></div>
+        <div><label>Location</label><select name="location_mode" ${ro}>${opt(["online","in_person","hybrid","unknown"], p.location_mode)}</select></div>
+        <div><label>Country</label><input name="country" value="${esc(p.country)}" ${ro}></div>
+        <div><label>City</label><input name="city" value="${esc(p.city)}" ${ro}></div>
+        <div><label>Compensation</label><select name="compensation_type" ${ro}>${opt(["none","prize","stipend","wage","funding"], p.compensation_type)}</select></div>
+        <div><label>Compensation note</label><input name="compensation_note" value="${esc(p.compensation_note)}" ${ro}></div>
+        <div><label>Organizer says intl welcome?</label><select name="open_to_intl" ${ro}>${opt(["unknown","yes","no"], p.open_to_intl)}</select></div>
+        <div class="wide"><label>Tags (comma separated)</label><input name="tags" value="${esc((p.tags || []).join(', '))}" ${ro}></div>
+        <div class="wide"><label>Description</label><textarea name="description" rows="2" ${ro}>${esc(p.description)}</textarea></div>
+        <div class="wide"><label>Eligibility note shown on the card (leave blank to auto-generate)</label><input name="eligibility_note" value="${esc(p.eligibility_note)}" ${ro}></div>
+      </div>
+      <div class="check">
+        <label><input type="checkbox" name="requires_us_citizen" ${p.requires_us_citizen ? 'checked' : ''} ${ro}> US citizens / PR only</label>
+        <label><input type="checkbox" name="requires_work_auth" ${p.requires_work_auth ? 'checked' : ''} ${ro}> Needs work authorization (CPT/OPT)</label>
+      </div>
+      ${status === 'pending' ? `<div class="row">
+        <button type="button" class="btn ok" data-act="approve">Approve as edited</button>
+        <button type="button" class="btn bad" data-act="reject">Reject</button>
+        <span class="flash"></span></div>` : ''}
+    </form>`;
+  }).join('');
+}
+
+function collect(form) {
+  const f = new FormData(form), g = k => (f.get(k) || '').toString().trim() || null;
+  return {
+    title: g('title'), url: g('url'), category: g('category'), organizer: g('organizer'), description: g('description'),
+    tags: (g('tags') || '').split(',').map(t => t.trim()).filter(Boolean),
+    deadline: g('deadline'), deadline_label: g('deadline_label'), location_mode: g('location_mode') || 'unknown',
+    country: g('country'), city: g('city'), compensation_type: g('compensation_type') || 'none', compensation_note: g('compensation_note'),
+    requires_us_citizen: form.requires_us_citizen.checked, requires_work_auth: form.requires_work_auth.checked,
+    open_to_intl: g('open_to_intl') || 'unknown', eligibility_note: g('eligibility_note'),
+  };
+}
+
+$('#list').addEventListener('click', async e => {
+  const b = e.target.closest('button[data-act]'); if (!b) return;
+  const form = b.closest('form'), id = form.dataset.id, flash = form.querySelector('.flash');
+  let r;
+  if (b.dataset.act === 'approve') {
+    r = await fetch(`/api/admin/submissions/${id}/approve`, { method: 'POST', headers: headers(), body: JSON.stringify(collect(form)) });
+  } else {
+    const reason = prompt('Reason (optional, kept for your records):') ?? '';
+    r = await fetch(`/api/admin/submissions/${id}/reject`, { method: 'POST', headers: headers(), body: JSON.stringify({ reason }) });
+  }
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { flash.style.color = 'var(--bad)'; flash.textContent = d.detail || r.statusText; return; }
+  flash.textContent = b.dataset.act === 'approve' ? `Published · flagged ${d.f1_flag}` : 'Rejected';
+  setTimeout(load, 700);
+});
+document.querySelectorAll('.tabs button').forEach(t => t.onclick = () => {
+  document.querySelectorAll('.tabs button').forEach(x => x.classList.remove('on')); t.classList.add('on'); status = t.dataset.s; load();
+});
+load();
+</script>
+</body>
+</html>

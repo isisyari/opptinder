@@ -1,0 +1,438 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Opportunities</title>
+<style>
+  :root {
+    --bg:#fafafa; --card:#ffffff; --ink:#111318; --muted:#70757f; --line:#e6e7eb; --soft:#f1f2f5;
+    --accent:#4f46e5; --accent-ink:#ffffff; --ok:#15803d; --ok-bg:#e8f7ee; --warn:#9a5b00; --warn-bg:#fff4e0; --soon:#c62828;
+    --shadow:0 10px 30px rgba(17,19,24,.08);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0e0f13; --card:#16181e; --ink:#eceef3; --muted:#8b909c; --line:#262932; --soft:#1d2028;
+            --accent:#818cf8; --accent-ink:#0e0f13; --ok:#86efac; --ok-bg:#12301d; --warn:#fcd38a; --warn-bg:#3a2a0a; --soon:#f87171;
+            --shadow:0 10px 30px rgba(0,0,0,.4); }
+  }
+  * { box-sizing:border-box }
+  html, body { height:100% }
+  body { margin:0; font:15px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, system-ui, sans-serif; background:var(--bg); color:var(--ink); -webkit-font-smoothing:antialiased }
+  button { font:inherit; color:inherit; cursor:pointer }
+  a { color:inherit }
+
+  /* ---- top bar ---- */
+  .top { position:sticky; top:0; z-index:5; background:color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter:blur(12px); border-bottom:1px solid var(--line) }
+  .bar { max-width:560px; margin:0 auto; padding:12px 16px 10px; display:flex; align-items:center; gap:8px }
+  .bar h1 { font-size:17px; font-weight:650; letter-spacing:-.01em; margin:0; margin-right:auto }
+  .icon { width:38px; height:38px; border-radius:12px; border:1px solid var(--line); background:var(--card); display:inline-flex; align-items:center; justify-content:center; position:relative }
+  .icon svg { width:18px; height:18px; stroke:currentColor; fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round }
+  .icon.on { background:var(--ink); color:var(--bg); border-color:var(--ink) }
+  .icon .dot { position:absolute; top:-5px; right:-5px; min-width:18px; height:18px; padding:0 5px; border-radius:9px; background:var(--accent); color:var(--accent-ink); font-size:11px; font-weight:600; display:flex; align-items:center; justify-content:center }
+  .icon .dot:empty { display:none }
+  .search { max-width:560px; margin:0 auto; padding:0 16px 10px; display:flex; gap:8px; align-items:center }
+  .search input { flex:1; height:38px; padding:0 14px; border:1px solid var(--line); border-radius:12px; background:var(--card); color:var(--ink); font:inherit; outline:none }
+  .search input:focus { border-color:var(--accent) }
+  .status { max-width:560px; margin:0 auto; padding:0 16px 8px; font-size:12.5px; color:var(--muted); display:flex; gap:8px; align-items:center }
+  .status button { border:none; background:none; color:var(--accent); padding:0; font-size:12.5px }
+
+  /* ---- deck ---- */
+  main { max-width:560px; margin:0 auto; padding:10px 16px calc(24px + env(safe-area-inset-bottom)) }
+  .stack { position:relative; height:min(600px, calc(100vh - 260px)); min-height:420px }
+  .card { position:absolute; inset:0; background:var(--card); border:1px solid var(--line); border-radius:20px; box-shadow:var(--shadow); overflow:hidden; display:flex; flex-direction:column; transition:transform .25s ease, opacity .25s ease; touch-action:pan-y; user-select:none; -webkit-user-select:none }
+  .card img { width:100%; height:160px; object-fit:cover; background:var(--soft); pointer-events:none }
+  .card .body { padding:16px 18px 14px; flex:1; overflow:auto }
+  .card h2 { margin:6px 0 4px; font-size:21px; line-height:1.2; letter-spacing:-.015em; font-weight:650 }
+  .meta { color:var(--muted); font-size:13px }
+  .when { margin:10px 0 8px; font-size:14px }
+  .when b { font-weight:600 } .when b.soon { color:var(--soon) }
+  .when span { color:var(--muted) }
+  .pills { display:flex; gap:6px; flex-wrap:wrap }
+  .pill { font-size:12px; padding:3px 9px; border-radius:999px; background:var(--soft); color:var(--ink) }
+  .pill.ok { background:var(--ok-bg); color:var(--ok) } .pill.warn { background:var(--warn-bg); color:var(--warn) }
+  .pill.ghost { background:transparent; border:1px solid var(--line); color:var(--muted) }
+  .desc { margin:8px 0 0; font-size:14px; color:var(--ink) }
+  .elig { margin-top:12px; font-size:13px; padding:10px 12px; border-radius:12px; background:var(--soft); color:var(--ink) }
+  .link { margin:12px 0 0; font-size:14px }
+  .link a { color:var(--accent); text-decoration:none; font-weight:500 }
+  .link small { color:var(--muted); margin-left:6px }
+  .actions { display:flex; justify-content:center; gap:22px; padding:18px 0 6px }
+  .actions button { width:60px; height:60px; border-radius:50%; border:1px solid var(--line); background:var(--card); display:inline-flex; align-items:center; justify-content:center; box-shadow:var(--shadow) }
+  .actions svg { width:24px; height:24px; stroke:currentColor; fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round }
+  .actions .save { color:var(--accent) } .actions .pass { color:var(--muted) }
+  .fine { font-size:12px; color:var(--muted); text-align:center; margin:8px 0 0 }
+  .empty { text-align:center; color:var(--muted); padding:80px 20px }
+  .empty button { border:none; background:none; color:var(--accent) }
+
+  /* ---- saved list ---- */
+  .list a { display:block; padding:12px 14px; border:1px solid var(--line); border-radius:14px; background:var(--card); margin-bottom:8px; text-decoration:none }
+  .list strong { font-weight:600 } .list small { color:var(--muted); display:block; margin-top:2px }
+  .list button { float:right; border:none; background:none; color:var(--muted); font-size:12px }
+
+  /* ---- sheet (filters / submit) ---- */
+  .scrim { position:fixed; inset:0; background:rgba(0,0,0,.35); opacity:0; pointer-events:none; transition:opacity .2s; z-index:20 }
+  .sheet { position:fixed; left:0; right:0; bottom:0; z-index:21; background:var(--card); border-radius:22px 22px 0 0; max-height:88vh; display:flex; flex-direction:column; transform:translateY(105%); transition:transform .28s cubic-bezier(.2,.8,.2,1); box-shadow:var(--shadow) }
+  .scrim.open { opacity:1; pointer-events:auto } .sheet.open { transform:none }
+  .sheet header { display:flex; align-items:center; gap:10px; padding:14px 18px 6px }
+  .sheet header h3 { margin:0; font-size:16px; font-weight:650; margin-right:auto }
+  .sheet header button { border:none; background:none; color:var(--muted); font-size:14px }
+  .grab { width:38px; height:4px; border-radius:2px; background:var(--line); margin:10px auto 0 }
+  .sheet .scroll { overflow:auto; padding:0 18px 12px }
+  .sheet footer { padding:12px 18px calc(14px + env(safe-area-inset-bottom)); border-top:1px solid var(--line); display:flex; gap:10px; align-items:center }
+  .primary { flex:1; height:46px; border-radius:14px; border:none; background:var(--accent); color:var(--accent-ink); font-weight:600; font-size:15px }
+  .ghostbtn { height:46px; padding:0 16px; border-radius:14px; border:1px solid var(--line); background:transparent }
+  @media (min-width:700px) {
+    .sheet { left:50%; right:auto; bottom:auto; top:50%; width:480px; max-height:80vh; border-radius:22px; transform:translate(-50%,-50%) scale(.96); opacity:0; pointer-events:none }
+    .sheet.open { transform:translate(-50%,-50%) scale(1); opacity:1; pointer-events:auto }
+    .grab { display:none }
+  }
+  details { border-top:1px solid var(--line) }
+  details:first-of-type { border-top:none }
+  summary { list-style:none; display:flex; align-items:center; padding:14px 0; cursor:pointer; font-weight:550 }
+  summary::-webkit-details-marker { display:none }
+  summary .n { margin-left:auto; font-size:12px; color:var(--accent); font-weight:600 }
+  summary .chev { width:16px; height:16px; margin-left:8px; stroke:var(--muted); fill:none; stroke-width:2; transition:transform .2s }
+  details[open] .chev { transform:rotate(180deg) }
+  .chips { display:flex; gap:8px; flex-wrap:wrap; padding:0 0 14px }
+  .chip { border:1px solid var(--line); border-radius:999px; padding:6px 12px; font-size:13.5px; cursor:pointer; user-select:none; background:var(--card) }
+  .chip.on { background:var(--ink); color:var(--bg); border-color:var(--ink) }
+  .chip small { opacity:.55; margin-left:4px }
+  .chip.dim { opacity:.4 }
+
+  /* ---- form ---- */
+  .f { display:grid; gap:12px; padding:6px 0 10px }
+  .f label { display:block; font-size:12.5px; color:var(--muted); margin-bottom:5px }
+  .f input, .f select, .f textarea { width:100%; height:42px; padding:0 12px; border:1px solid var(--line); border-radius:12px; background:var(--bg); color:var(--ink); font:inherit; outline:none }
+  .f textarea { height:auto; padding:10px 12px }
+  .f input:focus, .f select:focus, .f textarea:focus { border-color:var(--accent) }
+  .two { display:grid; grid-template-columns:1fr 1fr; gap:10px }
+  .seg { display:flex; gap:6px; flex-wrap:wrap }
+  .seg .chip { padding:7px 12px }
+  .f .hint { font-size:12px; color:var(--muted); margin-top:-4px }
+  .toast { position:fixed; left:50%; bottom:calc(24px + env(safe-area-inset-bottom)); transform:translate(-50%, 20px); background:var(--ink); color:var(--bg); padding:10px 16px; border-radius:12px; font-size:14px; opacity:0; transition:all .25s; z-index:30; pointer-events:none }
+  .toast.show { opacity:1; transform:translate(-50%, 0) }
+</style>
+</head>
+<body>
+
+<div class="top">
+  <div class="bar">
+    <h1>Opportunities</h1>
+    <button class="icon" id="btnSubmit" title="Suggest an opportunity" aria-label="Suggest an opportunity"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+    <button class="icon" id="btnSaved" title="Saved" aria-label="Saved"><svg viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg><span class="dot" id="savedDot"></span></button>
+    <button class="icon" id="btnFilters" title="Filters" aria-label="Filters"><svg viewBox="0 0 24 24"><path d="M4 6h16M7 12h10M10 18h4"/></svg><span class="dot" id="filterDot"></span></button>
+  </div>
+  <div class="search"><input id="q" type="search" placeholder="Search" autocomplete="off"></div>
+  <div class="status"><span id="count"></span><button id="clearInline" hidden>Clear filters</button></div>
+</div>
+
+<main>
+  <section id="feed">
+    <div class="stack" id="stack"></div>
+    <div class="actions">
+      <button class="pass" id="btnPass" aria-label="Pass"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+      <button class="save" id="btnSave" aria-label="Save"><svg viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg></button>
+    </div>
+    <p class="fine">Swipe right to save, left to pass. Flags are heuristics, not immigration advice: confirm with your DSO before accepting money or work.</p>
+  </section>
+  <section id="saved" class="list" hidden></section>
+</main>
+
+<div class="scrim" id="scrim"></div>
+
+<!-- Filters sheet -->
+<div class="sheet" id="filterSheet" role="dialog" aria-label="Filters">
+  <div class="grab"></div>
+  <header><h3>Filters</h3><button id="clearAll">Clear all</button></header>
+  <div class="scroll" id="filterBody">
+    <details open data-group="category"><summary>Type <span class="n"></span><svg class="chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="chips">
+        <span class="chip" data-v="hackathon">Hackathon</span><span class="chip" data-v="competition">Competition</span>
+        <span class="chip" data-v="conference">Conference</span><span class="chip" data-v="fellowship">Fellowship</span>
+        <span class="chip" data-v="research">Research</span><span class="chip" data-v="scholarship">Scholarship</span>
+        <span class="chip" data-v="on_campus_job">On-campus job</span><span class="chip" data-v="accelerator">Accelerator</span>
+      </div></details>
+    <details data-group="field" id="majors"><summary>Major <span class="n"></span><svg class="chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></summary><div class="chips"></div></details>
+    <details data-group="field" id="communities"><summary>Community <span class="n"></span><svg class="chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></summary><div class="chips"></div></details>
+    <details data-group="opts"><summary>Location &amp; eligibility <span class="n"></span><svg class="chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></summary>
+      <div class="chips">
+        <span class="chip" data-v="online_only">Online only</span>
+        <span class="chip" data-v="strict">Only "likely OK" on F-1</span>
+      </div></details>
+  </div>
+  <footer><button class="primary" id="applyFilters">Show results</button></footer>
+</div>
+
+<!-- Submit sheet -->
+<div class="sheet" id="submitSheet" role="dialog" aria-label="Suggest an opportunity">
+  <div class="grab"></div>
+  <header><h3>Suggest an opportunity</h3><button id="closeSubmit">Close</button></header>
+  <div class="scroll">
+    <form class="f" id="subForm" novalidate>
+      <div><label>Link *</label><input name="url" type="url" placeholder="https://" required></div>
+      <div><label>Name *</label><input name="title" required placeholder="e.g. Google Summer of Code"></div>
+      <div><label>Type *</label>
+        <div class="seg" data-name="category">
+          <span class="chip" data-v="hackathon">Hackathon</span><span class="chip" data-v="competition">Competition</span>
+          <span class="chip" data-v="conference">Conference</span><span class="chip" data-v="fellowship">Fellowship</span>
+          <span class="chip" data-v="research">Research</span><span class="chip" data-v="scholarship">Scholarship</span>
+          <span class="chip" data-v="on_campus_job">On-campus job</span><span class="chip" data-v="accelerator">Accelerator</span>
+          <span class="chip" data-v="other">Other</span>
+        </div></div>
+      <div class="two">
+        <div><label>Deadline</label><input name="deadline" type="date"></div>
+        <div><label>That date is…</label><select name="deadline_label"><option>Apply by</option><option>Submissions due</option><option>Registration closes</option><option>Event starts</option><option>Rolling</option></select></div>
+      </div>
+      <div><label>Where</label>
+        <div class="seg" data-name="location_mode">
+          <span class="chip on" data-v="online">Online</span><span class="chip" data-v="in_person">In person</span><span class="chip" data-v="hybrid">Hybrid</span>
+        </div></div>
+      <div class="two" id="placeRow" hidden>
+        <div><label>City</label><input name="city"></div>
+        <div><label>Country</label><input name="country" placeholder="United States"></div>
+      </div>
+      <div><label>Money involved</label>
+        <div class="seg" data-name="compensation_type">
+          <span class="chip on" data-v="none">None</span><span class="chip" data-v="prize">Prize</span><span class="chip" data-v="funding">Scholarship / travel grant</span>
+          <span class="chip" data-v="stipend">Stipend</span><span class="chip" data-v="wage">Hourly wage</span>
+        </div></div>
+      <div><label>International students</label>
+        <div class="seg" data-name="open_to_intl">
+          <span class="chip on" data-v="unknown">Not stated</span><span class="chip" data-v="yes">Explicitly welcome</span><span class="chip" data-v="no">US citizens / PR only</span>
+        </div>
+        <p class="hint">We flag F-1 eligibility from this. A reviewer double-checks before it goes live.</p></div>
+      <div><label>Anything else the reviewer should know</label><textarea name="note" rows="2" placeholder="Where you found it, what makes it good, eligibility details…"></textarea></div>
+      <div><label>Your email (optional, never shown)</label><input name="submitted_by" type="email"></div>
+    </form>
+  </div>
+  <footer><button class="ghostbtn" id="cancelSubmit">Cancel</button><button class="primary" id="sendSubmit">Submit for review</button></footer>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
+const MAJORS = ["Tech & Computing","Business & Finance","Engineering","Health & Medicine","Sciences & Research",
+                "Social Sciences & Policy","Law & Government","Arts, Humanities & Design","Education","Multidisciplinary / General"];
+const COMMUNITIES = ["Women","Black","Latinx","LGBTQ+","Native American","First-gen / underrepresented","Beginner friendly"];
+let queue = [], busy = false, stats = {}, savedCount = 0;
+
+const chip = v => { const s = document.createElement('span'); s.className = 'chip'; s.dataset.v = v; s.innerHTML = `${v}<small></small>`; return s; };
+MAJORS.forEach(m => $('#majors .chips').appendChild(chip(m)));
+COMMUNITIES.forEach(c => $('#communities .chips').appendChild(chip(c)));
+
+/* ---------- filters state ---------- */
+const sel = group => $$(`#filterBody details[data-group="${group}"] .chip.on`).map(c => c.dataset.v);
+function params() {
+  const p = new URLSearchParams();
+  sel('category').forEach(c => p.append('category', c));
+  sel('field').forEach(f => p.append('field', f));
+  const opts = sel('opts');
+  if ($('#q').value.trim()) p.set('q', $('#q').value.trim());
+  p.set('online_only', opts.includes('online_only'));
+  p.set('flags', opts.includes('strict') ? 'likely_ok' : 'likely_ok,check_dso');
+  p.set('limit', 200);
+  return p;
+}
+function activeFilterCount() { return sel('category').length + sel('field').length + sel('opts').length; }
+function refreshFilterUI() {
+  $$('#filterBody details').forEach(d => { const n = d.querySelectorAll('.chip.on').length; d.querySelector('.n').textContent = n ? n : ''; });
+  const n = activeFilterCount();
+  $('#filterDot').textContent = n || '';
+  $('#btnFilters').classList.toggle('on', n > 0);
+  $('#clearInline').hidden = n === 0 && !$('#q').value.trim();
+  try { localStorage.setItem('filters', JSON.stringify({ on: $$('#filterBody .chip.on').map(c => c.dataset.v) })); } catch {}
+}
+function restoreFilters() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('filters') || 'null');
+    if (saved) $$('#filterBody .chip').forEach(c => c.classList.toggle('on', saved.on.includes(c.dataset.v)));
+  } catch {}
+}
+
+async function loadStats() {
+  stats = await (await fetch('/api/stats')).json();
+  $$('#filterBody details[data-group="field"] .chip').forEach(c => {
+    const n = (stats.by_field || {})[c.dataset.v] || 0;
+    c.querySelector('small').textContent = n || '';
+    c.classList.toggle('dim', !n);
+  });
+}
+async function load() {
+  refreshFilterUI();
+  queue = await (await fetch('/api/feed?' + params())).json();
+  updateCount(); render(); refreshSaved();
+}
+function updateCount() {
+  const n = activeFilterCount(), q = $('#q').value.trim();
+  const scope = n || q ? `${queue.length} of ${stats.total_active ?? '…'}` : `${queue.length} to review · ${stats.total_active ?? '…'} total`;
+  $('#count').textContent = scope + (n ? ` · ${n} filter${n > 1 ? 's' : ''}` : '');
+}
+
+/* ---------- dates ---------- */
+const localDate = iso => { const [y, m, d] = iso.split('-').map(Number); return new Date(y, m - 1, d); };
+function relDays(iso) { const t = new Date(); t.setHours(0,0,0,0); return Math.round((localDate(iso) - t) / 86400000); }
+function whenText(o) {
+  if (!o.deadline) return '';
+  const d = relDays(o.deadline);
+  const rel = d === 0 ? 'today' : d === 1 ? 'tomorrow' : d > 1 ? `in ${d} days` : `${-d} days ago`;
+  return `<div class="when">${o.deadline_label || 'Deadline'} <b class="${d <= 7 ? 'soon' : ''}">${rel}</b> <span>· ${o.deadline}</span></div>`;
+}
+function eventText(o) {
+  if (!o.starts_at || o.deadline_label === 'Event starts' || o.deadline_label === 'Event ends') return '';
+  return ` · Event ${o.ends_at && o.ends_at !== o.starts_at ? `${o.starts_at} → ${o.ends_at}` : o.starts_at}`;
+}
+
+/* ---------- cards ---------- */
+const esc = s => (s ?? '').toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function card(o) {
+  const el = document.createElement('article'); el.className = 'card';
+  const flag = o.f1_flag === 'likely_ok' ? '<span class="pill ok">Likely OK on F-1</span>' : '<span class="pill warn">Check with DSO</span>';
+  const place = [o.city, o.country].filter(Boolean).join(', ');
+  const where = o.location_mode === 'online' ? 'Online' : o.location_mode === 'hybrid' ? (place ? place + ' · also virtual' : 'Hybrid')
+              : o.location_mode === 'unknown' ? 'Location TBA' : (place || 'In person');
+  el.innerHTML = `
+    ${o.image_url ? `<img src="${esc(o.image_url)}" alt="">` : ''}
+    <div class="body">
+      <div class="pills"><span class="pill">${esc(o.category.replace('_',' '))}</span>${flag}${o.compensation_note ? `<span class="pill">${esc(o.compensation_note)}</span>` : ''}</div>
+      <h2>${esc(o.title)}</h2>
+      <div class="meta">${o.organizer ? esc(o.organizer) + ' · ' : ''}${esc(where)}${esc(eventText(o))}</div>
+      ${whenText(o)}
+      ${o.description ? `<p class="desc">${esc(o.description.slice(0, 200))}${o.description.length > 200 ? '…' : ''}</p>` : ''}
+      ${o.fields.length ? `<div class="pills" style="margin-top:10px">${o.fields.map(t => `<span class="pill ghost">${esc(t)}</span>`).join('')}</div>` : ''}
+      <div class="elig">${esc(o.eligibility_note || '')}</div>
+      <p class="link"><a href="${esc(o.url)}" target="_blank" rel="noopener">Open the official page ↗</a><small>via ${esc(o.source)}</small></p>
+    </div>`;
+  let x0 = null, y0 = null, dragging = false;
+  el.addEventListener('pointerdown', e => {
+    if (e.button !== 0 || e.target.closest('a, button')) return;
+    x0 = e.clientX; y0 = e.clientY; dragging = false; el.setPointerCapture(e.pointerId);
+  });
+  el.addEventListener('pointermove', e => {
+    if (x0 === null) return;
+    const dx = e.clientX - x0, dy = e.clientY - y0;
+    if (!dragging) {
+      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+      if (Math.abs(dy) > Math.abs(dx)) { x0 = null; return; }
+      dragging = true; el.style.transition = 'none';
+    }
+    el.style.transform = `translateX(${dx}px) rotate(${dx / 25}deg)`;
+  });
+  const end = e => {
+    if (x0 === null) return;
+    const dx = e.clientX - x0; x0 = null; el.style.transition = '';
+    if (dragging && dx > 80) act('save'); else if (dragging && dx < -80) act('pass'); else el.style.transform = '';
+    dragging = false;
+  };
+  el.addEventListener('pointerup', end); el.addEventListener('pointercancel', end);
+  el.addEventListener('dragstart', e => e.preventDefault());
+  return el;
+}
+function render() {
+  const stack = $('#stack'); stack.innerHTML = '';
+  if (!queue.length) {
+    stack.innerHTML = `<div class="empty">Nothing here.<br>${activeFilterCount() || $('#q').value ? '<button id="emptyClear">Clear filters</button>' : 'Run <code>python3 ingest.py</code> for fresh data.'}</div>`;
+    const b = $('#emptyClear'); if (b) b.onclick = clearFilters;
+    return;
+  }
+  [...queue.slice(0, 2)].reverse().forEach((o, i, arr) => {
+    const c = card(o);
+    if (i < arr.length - 1) { c.style.transform = 'scale(.96) translateY(10px)'; c.style.pointerEvents = 'none'; }
+    stack.appendChild(c);
+  });
+}
+async function act(action) {
+  if (busy || !queue.length) return;
+  busy = true;
+  const o = queue[0], top = $('#stack').lastElementChild;
+  top.style.transition = ''; top.style.opacity = '0';
+  top.style.transform = action === 'save' ? 'translateX(140%) rotate(12deg)' : 'translateX(-140%) rotate(-12deg)';
+  await fetch('/api/swipe', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ opportunity_id: o.id, action }) });
+  setTimeout(() => { queue.shift(); render(); busy = false; updateCount(); refreshSaved(); }, 240);
+}
+
+/* ---------- saved ---------- */
+async function refreshSaved() {
+  const s = await (await fetch('/api/saved')).json();
+  savedCount = s.length; $('#savedDot').textContent = s.length || '';
+  return s;
+}
+async function showSaved() {
+  const s = await refreshSaved(), el = $('#saved');
+  el.innerHTML = s.length ? s.map(o => `
+    <a href="${esc(o.url)}" target="_blank" rel="noopener">
+      <button data-id="${o.id}">remove</button>
+      <strong>${esc(o.title)}</strong>
+      <small>${esc(o.category.replace('_',' '))} · ${o.deadline ? esc(o.deadline_label || 'deadline') + ' ' + o.deadline : 'no deadline'} · ${o.f1_flag === 'likely_ok' ? 'likely OK' : 'check with DSO'}</small>
+    </a>`).join('') : '<div class="empty">Nothing saved yet.</div>';
+  el.querySelectorAll('button').forEach(b => b.onclick = async e => {
+    e.preventDefault(); await fetch('/api/swipe/' + b.dataset.id, { method: 'DELETE' }); showSaved(); load();
+  });
+}
+let viewingSaved = false;
+$('#btnSaved').onclick = () => {
+  viewingSaved = !viewingSaved;
+  $('#feed').hidden = viewingSaved; $('#saved').hidden = !viewingSaved;
+  $('#btnSaved').classList.toggle('on', viewingSaved);
+  viewingSaved ? showSaved() : load();
+};
+
+/* ---------- sheets ---------- */
+function openSheet(id) { $('#scrim').classList.add('open'); $(id).classList.add('open'); document.body.style.overflow = 'hidden'; }
+function closeSheets() { $('#scrim').classList.remove('open'); $$('.sheet').forEach(s => s.classList.remove('open')); document.body.style.overflow = ''; }
+$('#scrim').onclick = closeSheets;
+$('#btnFilters').onclick = () => openSheet('#filterSheet');
+$('#applyFilters').onclick = () => { closeSheets(); load(); };
+function clearFilters() { $$('#filterBody .chip.on').forEach(c => c.classList.remove('on')); $('#q').value = ''; load(); }
+$('#clearAll').onclick = clearFilters; $('#clearInline').onclick = clearFilters;
+$('#filterBody').addEventListener('click', e => {
+  const c = e.target.closest('.chip'); if (!c) return;
+  c.classList.toggle('on'); refreshFilterUI();
+  fetch('/api/feed?' + params()).then(r => r.json()).then(d => { $('#applyFilters').textContent = `Show ${d.length} result${d.length === 1 ? '' : 's'}`; });
+});
+let qTimer; $('#q').addEventListener('input', () => { clearTimeout(qTimer); qTimer = setTimeout(load, 250); });
+document.addEventListener('keydown', e => {
+  if (e.target.matches('input, textarea, select')) return;
+  if (e.key === 'Escape') closeSheets();
+  if ($('.sheet.open') || viewingSaved) return;
+  if (e.key === 'ArrowRight') act('save'); if (e.key === 'ArrowLeft') act('pass');
+});
+$('#btnSave').onclick = () => act('save'); $('#btnPass').onclick = () => act('pass');
+
+/* ---------- submit ---------- */
+$('#btnSubmit').onclick = () => openSheet('#submitSheet');
+$('#closeSubmit').onclick = closeSheets; $('#cancelSubmit').onclick = closeSheets;
+$('#subForm').addEventListener('click', e => {
+  const c = e.target.closest('.seg .chip'); if (!c) return;
+  const seg = c.parentElement; seg.querySelectorAll('.chip').forEach(x => x.classList.remove('on')); c.classList.add('on');
+  if (seg.dataset.name === 'location_mode') $('#placeRow').hidden = c.dataset.v === 'online';
+});
+const segVal = name => ($(`#subForm .seg[data-name="${name}"] .chip.on`) || {}).dataset?.v || null;
+function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2600); }
+$('#sendSubmit').onclick = async () => {
+  const f = new FormData($('#subForm')), g = k => (f.get(k) || '').toString().trim() || null;
+  const body = {
+    url: g('url'), title: g('title'), category: segVal('category'),
+    deadline: g('deadline'), deadline_label: g('deadline_label'),
+    location_mode: segVal('location_mode') || 'unknown', city: g('city'), country: g('country'),
+    compensation_type: segVal('compensation_type') || 'none',
+    open_to_intl: segVal('open_to_intl') || 'unknown',
+    requires_us_citizen: segVal('open_to_intl') === 'no',
+    requires_work_auth: segVal('compensation_type') === 'wage' && segVal('category') !== 'on_campus_job',
+    note: g('note'), submitted_by: g('submitted_by'),
+  };
+  if (!body.url || !body.title || !body.category) { toast('Link, name and type are required.'); return; }
+  const r = await fetch('/api/submit', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { toast(d.detail || 'Something went wrong.'); return; }
+  closeSheets(); $('#subForm').reset();
+  $$('#subForm .seg').forEach(s => { s.querySelectorAll('.chip').forEach(x => x.classList.remove('on')); const first = s.querySelector('.chip'); if (s.dataset.name !== 'category') first.classList.add('on'); });
+  $('#placeRow').hidden = true;
+  toast(d.duplicate ? (d.pending ? 'Already submitted, waiting for review.' : 'Already in the feed.') : 'Thanks! It’ll appear once reviewed.');
+};
+
+restoreFilters();
+loadStats().then(load);
+</script>
+</body>
+</html>
