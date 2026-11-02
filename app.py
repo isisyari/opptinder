@@ -28,8 +28,9 @@ async def lifespan(_app: FastAPI):
     if not ADMIN_TOKEN:
         print("[startup] WARNING: ADMIN_TOKEN is not set. Admin endpoints (review queue, ingest) answer "
               "localhost only. Set ADMIN_TOKEN before exposing this server publicly.")
-    if not mailer.configured():
-        print("[startup] no email provider (BREVO_API_KEY or RESEND_API_KEY): sign-in codes are printed to this log instead of emailed.")
+    if os.environ.get("REQUIRE_EMAIL_CODE") == "1" and not mailer.configured():
+        print("[startup] REQUIRE_EMAIL_CODE=1 but no email provider (BREVO_API_KEY or RESEND_API_KEY): "
+              "sign-in codes are printed to this log instead of emailed.")
     # Expiry used to run only inside ingest.py, so a stale DB served dead cards for weeks.
     # Do it on every boot too; the feed query below also filters by date as a belt-and-braces.
     with connect() as conn:

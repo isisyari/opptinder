@@ -226,7 +226,7 @@
   <header><h3 id="authTitle">Keep your saves</h3><button id="closeAuth">Close</button></header>
   <div class="scroll">
     <div id="authOut">
-      <p class="lead">Sign in with your name and email so your saved opportunities follow you to any device. No password: we email you a 6-digit code.</p>
+      <p class="lead" id="authLead">Sign in with your name and email so your saved opportunities follow you to any device. No password.</p>
       <form class="f" id="authForm" novalidate>
         <div><label>Name</label><input name="name" required autocomplete="name" placeholder="Your name"></div>
         <div><label>Email</label><input name="email" type="email" required autocomplete="email" placeholder="you@university.edu"></div>
@@ -401,12 +401,20 @@ async function act(action) {
 }
 
 /* ---------- account ---------- */
-let me = null, authStep = 'email';
+let me = null, authStep = 'email', authMode = 'simple';
 const nudged = () => { try { return !!localStorage.getItem('authNudged'); } catch { return true; } };
 const markNudged = () => { try { localStorage.setItem('authNudged', '1'); } catch {} };
 async function loadMe() {
-  try { me = (await (await fetch('/api/auth/me')).json()).user; } catch { me = null; }
+  try { const d = await (await fetch('/api/auth/me')).json(); me = d.user; authMode = d.mode || 'simple'; } catch { me = null; }
+  $('#authLead').textContent = authMode === 'code'
+    ? 'Sign in with your name and email so your saved opportunities follow you to any device. No password: we email you a 6-digit code.'
+    : 'Sign in with your name and email so your saved opportunities follow you to any device. No password.';
   renderMe();
+}
+function finishSignIn(d) {
+  me = d.user; renderMe(); closeSheets(); markNudged();
+  toast(`Signed in as ${me.name}` + (d.merged ? ` · ${d.merged} item${d.merged === 1 ? '' : 's'} synced` : ''));
+  viewingSaved ? showSaved() : load();
 }
 function renderMe() {
   $('#btnAccount').classList.toggle('on', !!me);
@@ -416,7 +424,8 @@ function renderMe() {
   if (me) { $('#meName').textContent = me.name; $('#meEmail').textContent = me.email; }
 }
 function openAuth() {
-  authStep = 'email'; $('#codeRow').hidden = true; $('#authGo').textContent = 'Send code'; $('#authForm [name=code]').value = '';
+  authStep = 'email'; $('#codeRow').hidden = true; $('#authForm [name=code]').value = '';
+  $('#authGo').textContent = authMode === 'code' ? 'Send code' : 'Sign in';
   openSheet('#authSheet');
 }
 $('#btnAccount').onclick = openAuth;
@@ -428,9 +437,10 @@ $('#authGo').onclick = async () => {
   if (authStep === 'email') {
     if (!name || !email) { toast('Name and email, please.'); return; }
     btn.disabled = true;
-    const r = await fetch('/api/auth/request', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ name, email }) });
+    const r = await fetch('/api/auth/request', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ name, email, anon_user: USER }) });
     const d = await r.json().catch(() => ({})); btn.disabled = false;
-    if (!r.ok) { toast(d.detail || 'Could not send the code.'); return; }
+    if (!r.ok) { toast(d.detail || 'Could not sign in.'); return; }
+    if (d.user) { finishSignIn(d); return; }            // simple mode: signed in already
     authStep = 'code'; $('#codeRow').hidden = false; btn.textContent = 'Sign in';
     $('#codeHint').textContent = d.delivered ? `We emailed a code to ${email}. It expires in 10 minutes.`
                                              : 'Email isn’t set up on this server yet: the code was printed to the server log.';
@@ -442,9 +452,7 @@ $('#authGo').onclick = async () => {
     const r = await fetch('/api/auth/verify', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ email, code, anon_user: USER }) });
     const d = await r.json().catch(() => ({})); btn.disabled = false;
     if (!r.ok) { toast(d.detail || 'That didn’t work.'); return; }
-    me = d.user; renderMe(); closeSheets(); markNudged();
-    toast(`Signed in as ${me.name}` + (d.merged ? ` · ${d.merged} item${d.merged === 1 ? '' : 's'} synced` : ''));
-    viewingSaved ? showSaved() : load();
+    finishSignIn(d);
   }
 };
 $('#authForm').addEventListener('submit', e => { e.preventDefault(); $('#authGo').click(); });

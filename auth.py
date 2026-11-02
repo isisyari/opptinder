@@ -1,8 +1,9 @@
-"""Passwordless sign-in: name + email, verified with a 6-digit code sent to the address.
+"""Passwordless sign-in: name + email.
 
-    POST /api/auth/request  {email, name}          -> emails a code (10 min, 5 attempts)
-    POST /api/auth/verify   {email, code, anon_user} -> sets the session cookie, merges anonymous swipes
-    GET  /api/auth/me                                -> {user: {name, email} | null}
+    POST /api/auth/request  {email, name, anon_user}  simple mode: signs in, sets the cookie, merges swipes
+                                                      code mode:   emails a 6-digit code (10 min, 5 attempts)
+    POST /api/auth/verify   {email, code, anon_user}  code mode only: checks the code, then signs in
+    GET  /api/auth/me                                 -> {user: {name, email} | null, mode: simple | code}
     POST /api/auth/logout
 
 Sessions are a random token in an HttpOnly cookie; only its sha256 is stored. Signed-in users' swipes
@@ -12,6 +13,7 @@ for anonymous and signed-in visitors.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import secrets
 import threading
@@ -28,6 +30,10 @@ from models import connect
 router = APIRouter(prefix="/api/auth")
 
 COOKIE = "session"
+# Default: name + a well-formed email is enough (no email provider to set up; anyone who types your
+# address could see your saved list, which is the accepted trade-off for this app). Set
+# REQUIRE_EMAIL_CODE=1 plus BREVO_* / RESEND_* to prove addresses with a 6-digit emailed code.
+REQUIRE_CODE = os.environ.get("REQUIRE_EMAIL_CODE", "").strip() == "1"
 SESSION_DAYS = 180
 CODE_MINUTES = 10
 CODE_ATTEMPTS = 5
@@ -110,11 +116,6 @@ def _set_cookie(response: Response, request: Request, token: str) -> None:
 
 # ---------------------------------------------------------------- routes
 
-class RequestCode(BaseModel):
-    email: str
-    name: str
-
-
 class VerifyCode(BaseModel):
     email: str
     code: str
@@ -128,14 +129,54 @@ def _clean_email(s: str) -> str:
     return e
 
 
+def _sign_in(conn, email: str, name: str, anon_user: str | None, now: datetime) -> tuple[dict, int, str]:
+    """Find or create the user, merge the browser's anonymous swipes, open a session.
+    -> ({name, email}, merged_count, session_token)"""
+    user = conn.execute("SELECT * FROM users WHERE email = %s", (email,)).fetchone()
+    if user:
+        conn.execute("UPDATE users SET last_seen = %s WHERE id = %s", (_iso(now), user["id"]))
+        uid = user["id"]
+    else:
+        uid = conn.execute(
+            "INSERT INTO users (email, name, domain, created_at, last_seen) VALUES (%s,%s,%s,%s,%s) RETURNING id",
+            (email, name, email.rsplit("@", 1)[1], _iso(now), _iso(now))).fetchone()["id"]
+    # Bring this browser's anonymous swipes into the account. Where both exist, the account's wins.
+    merged = 0
+    if anon_user and not anon_user.startswith("u:"):
+        merged = conn.execute(
+            "INSERT INTO swipes (user_id, opportunity_id, action, created_at) "
+            "SELECT %s, opportunity_id, action, created_at FROM swipes WHERE user_id = %s "
+            "ON CONFLICT (user_id, opportunity_id) DO NOTHING",
+            (f"u:{uid}", anon_user)).rowcount
+        conn.execute("DELETE FROM swipes WHERE user_id = %s", (anon_user,))
+    token = secrets.token_urlsafe(32)
+    conn.execute("INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (%s,%s,%s,%s)",
+                 (_sha(token), uid, _iso(now), _iso(now + timedelta(days=SESSION_DAYS))))
+    conn.execute("DELETE FROM sessions WHERE expires_at < %s", (_iso(now),))
+    return {"name": user["name"] if user else name, "email": email}, merged, token
+
+
+class RequestCode(BaseModel):
+    email: str
+    name: str
+    anon_user: str | None = None
+
+
 @router.post("/request")
-def request_code(body: RequestCode, request: Request):
+def request_code(body: RequestCode, request: Request, response: Response):
+    """Simple mode (default): name + a well-formed email signs you straight in.
+    Code mode (REQUIRE_EMAIL_CODE=1): emails a 6-digit code to prove the address."""
     email = _clean_email(body.email)
     name = re.sub(r"\s+", " ", body.name or "").strip()
     if not 1 <= len(name) <= 80:
         raise HTTPException(400, "Please enter your name (up to 80 characters).")
     ip = client_ip(request)
-    rate_limit(f"auth-ip:{ip}", 10, 3600, "Too many sign-in attempts from this network; try again in an hour.")
+    rate_limit(f"auth-ip:{ip}", 20, 3600, "Too many sign-in attempts from this network; try again in an hour.")
+    if not REQUIRE_CODE:
+        with connect() as conn:
+            user, merged, token = _sign_in(conn, email, name, body.anon_user, _now())
+        _set_cookie(response, request, token)
+        return {"ok": True, "user": user, "merged": merged}
     rate_limit(f"auth-email:{email}", 3, 900, "We already sent codes to that address; wait 15 minutes.")
     code = f"{secrets.randbelow(1_000_000):06d}"
     now = _now()
@@ -179,36 +220,16 @@ def verify_code(body: VerifyCode, request: Request, response: Response):
             raise HTTPException(400, f"Wrong code. {left} attempt{'s' if left != 1 else ''} left." if left else
                                 "Wrong code. Request a new one.")
         conn.execute("UPDATE login_codes SET consumed = 1 WHERE id = %s", (rec["id"],))
-        user = conn.execute("SELECT * FROM users WHERE email = %s", (email,)).fetchone()
-        if user:
-            conn.execute("UPDATE users SET last_seen = %s WHERE id = %s", (_iso(now), user["id"]))
-            uid = user["id"]
-        else:
-            uid = conn.execute(
-                "INSERT INTO users (email, name, domain, created_at, last_seen) VALUES (%s,%s,%s,%s,%s) RETURNING id",
-                (email, rec["name"], email.rsplit("@", 1)[1], _iso(now), _iso(now))).fetchone()["id"]
-        # Bring this browser's anonymous swipes into the account. Where both exist, the account's wins.
-        merged = 0
-        if body.anon_user and not body.anon_user.startswith("u:"):
-            merged = conn.execute(
-                "INSERT INTO swipes (user_id, opportunity_id, action, created_at) "
-                "SELECT %s, opportunity_id, action, created_at FROM swipes WHERE user_id = %s "
-                "ON CONFLICT (user_id, opportunity_id) DO NOTHING",
-                (f"u:{uid}", body.anon_user)).rowcount
-            conn.execute("DELETE FROM swipes WHERE user_id = %s", (body.anon_user,))
-        token = secrets.token_urlsafe(32)
-        conn.execute("INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (%s,%s,%s,%s)",
-                     (_sha(token), uid, _iso(now), _iso(now + timedelta(days=SESSION_DAYS))))
-        conn.execute("DELETE FROM sessions WHERE expires_at < %s", (_iso(now),))
-        name = user["name"] if user else rec["name"]
+        user, merged, token = _sign_in(conn, email, rec["name"], body.anon_user, now)
     _set_cookie(response, request, token)
-    return {"ok": True, "user": {"name": name, "email": email}, "merged": merged}
+    return {"ok": True, "user": user, "merged": merged}
 
 
 @router.get("/me")
 def me(request: Request):
     u = user_from_request(request)
-    return {"user": {"name": u["name"], "email": u["email"]} if u else None}
+    return {"user": {"name": u["name"], "email": u["email"]} if u else None,
+            "mode": "code" if REQUIRE_CODE else "simple"}
 
 
 @router.post("/logout")

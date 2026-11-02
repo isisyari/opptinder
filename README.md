@@ -95,17 +95,20 @@ Anonymous first: the page generates a UUID per browser (`localStorage.uid`) and 
 feed / swipe / saved call, so two visitors never see each other's passes. Saves made this way live in that
 browser only.
 
-Sign-in is passwordless (`auth.py`): name + email, then a 6-digit code emailed to the address proves it's
-real. The sheet opens the first time someone saves a card (once; "Not now" is remembered), from the account
-button, or from the banner on the Saved tab. On success the browser's anonymous swipes are merged into the
-account (the account's own record wins on conflicts), a 180-day HttpOnly session cookie is set, and every
-feed / swipe / saved call resolves to `user_id = 'u:<users.id>'` regardless of what the page sends.
+Sign-in is passwordless (`auth.py`): name + email. By default that's all it takes (the email just has to be
+well-formed), so there is nothing to configure. The sheet opens the first time someone saves a card (once;
+"Not now" is remembered), from the account button, or from the banner on the Saved tab. On success the
+browser's anonymous swipes are merged into the account (the account's own record wins on conflicts), a
+180-day HttpOnly session cookie is set, and every feed / swipe / saved call resolves to
+`user_id = 'u:<users.id>'` regardless of what the page sends. Trade-off of the simple mode: anyone who types
+your email could see your saved list. Acceptable for a list of public opportunities.
 
+Optional strict mode, `REQUIRE_EMAIL_CODE=1`: a 6-digit code is emailed and must be typed back.
 - Codes: 10-minute expiry, 5 wrong attempts, one live code per email, only the sha256 is stored. Limits:
-  3 code requests per email per 15 min, 10 per IP per hour, 30 verifies per IP per hour.
-- Sending: `RESEND_API_KEY` + `RESEND_FROM` (`mailer.py`). Without the key the code is printed to the server
-  log and the sheet tells the user so, which is how local development works. Resend's free tier (about 100
-  emails a day) is plenty; verify your domain there so mail comes from `hello@yourdomain`.
+  3 code requests per email per 15 min, 20 sign-ins per IP per hour, 30 verifies per IP per hour.
+- Sending (`mailer.py`): `BREVO_API_KEY` + `BREVO_FROM` (free, sends from a verified personal address, no
+  domain needed) or `RESEND_API_KEY` + `RESEND_FROM` (needs a verified domain). Without either the code is
+  printed to the server log and the sheet tells the user so.
 - Tables: `users` (email, name, domain, created_at, last_seen), `login_codes`, `sessions`.
 - `/admin` → **Users** tab (and `GET /api/admin/users`) lists everyone who signed in, with school domain
   counts and how many cards each has saved. `/api/stats` reports the user count.
