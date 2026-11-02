@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # One-shot server setup for F-1 Opportunities on a fresh Ubuntu VM (tested shape: Oracle Always Free).
 #
-#   sudo bash setup.sh yourdomain.org https://github.com/YOU/REPO.git
+#   sudo bash setup.sh yourdomain.org https://github.com/YOU/REPO.git     # HTTPS on your domain
+#   sudo bash setup.sh 203.0.113.9   https://github.com/YOU/REPO.git     # no domain yet: plain HTTP on the IP
 #
+# Re-run with the domain later to switch to HTTPS; nothing else changes.
 # Installs Python + Caddy, clones the repo to /opt/f1, creates the venv, writes /etc/f1.env (secrets),
 # a systemd service (uvicorn on 127.0.0.1:8000), a Caddyfile (HTTPS for the domain -> :8000) and a
 # nightly cron ingest. Safe to re-run: it updates in place. Run `deploy/update.sh` after a git push.
@@ -78,13 +80,25 @@ systemctl daemon-reload
 systemctl enable -q $SVC
 systemctl restart $SVC
 
-echo "== Caddy (automatic HTTPS for $DOMAIN)"
-cat > /etc/caddy/Caddyfile <<EOF
+if [[ "$DOMAIN" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "== Caddy: plain HTTP on http://$DOMAIN (no domain yet; re-run with a domain for HTTPS)"
+  cat > /etc/caddy/Caddyfile <<EOF
+:80 {
+    encode gzip
+    reverse_proxy 127.0.0.1:8000
+}
+EOF
+  URL="http://$DOMAIN"
+else
+  echo "== Caddy (automatic HTTPS for $DOMAIN)"
+  cat > /etc/caddy/Caddyfile <<EOF
 $DOMAIN, www.$DOMAIN {
     encode gzip
     reverse_proxy 127.0.0.1:8000
 }
 EOF
+  URL="https://$DOMAIN"
+fi
 systemctl restart caddy
 
 echo "== nightly ingest at 04:17 server time (as the f1 user, with the same secrets)"
@@ -94,8 +108,8 @@ EOF
 touch /var/log/f1-ingest.log && chown f1:f1 /var/log/f1-ingest.log
 
 echo
-echo "Done. Next:"
-echo "  1. Point $DOMAIN (A record) and www.$DOMAIN at this server's public IP, if you haven't."
+echo "Done. The site is at $URL  (admin: $URL/admin)"
+echo "  1. If you used a domain: make sure its A records point at this server's public IP."
 echo "  2. Copy your laptop's database here (it holds the page-read eligibility results):"
 echo "       scp opportunities.db ubuntu@<ip>:/tmp/ && sudo mv /tmp/opportunities.db $APP/ && sudo chown f1:f1 $APP/opportunities.db && sudo systemctl restart $SVC"
 echo "     or start fresh:  sudo -u f1 bash -c 'cd $APP && .venv/bin/python ingest.py'"

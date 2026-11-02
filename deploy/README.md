@@ -43,6 +43,12 @@ At your registrar add two records pointing at the VM's public IP:
 
 Caddy gets a free HTTPS certificate automatically once these resolve (a few minutes, up to an hour).
 
+## No domain yet?
+
+Skip steps 2 and 4 and pass the VM's public IP instead of a domain in step 5. The site runs on
+`http://<public IP>` (plain HTTP, no certificate). Everything works, including sign-in. When you buy the
+domain, add the DNS records and re-run the same script with the domain; it switches to HTTPS in place.
+
 ## 5. Set up the server (one command)
 
 ```bash
