@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, fields, asdict
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -128,15 +128,28 @@ def f1_flag(o: Opportunity) -> tuple[str, str]:
     return "unknown", "Eligibility not determined yet."
 
 
+_INITIALIZED: set[Path] = set()   # db paths whose schema/migrations ran in this process
+
+
 def connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
+    """Open a connection. WAL mode lets readers (the feed) run while ingest writes, and the
+    busy timeout makes concurrent swipes wait briefly instead of failing with 'database is locked'.
+    Schema creation + migrations run once per process, not on every request."""
+    conn = sqlite3.connect(db_path, timeout=10)
     conn.row_factory = sqlite3.Row
-    conn.executescript(SCHEMA_PATH.read_text())
-    # lightweight migration for databases created before a column existed
-    existing = {r[1] for r in conn.execute("PRAGMA table_info(opportunities)")}
-    for col, ddl in {"fields": "TEXT NOT NULL DEFAULT '[]'", "deadline_label": "TEXT"}.items():
-        if col not in existing:
-            conn.execute(f"ALTER TABLE opportunities ADD COLUMN {col} {ddl}")
+    conn.execute("PRAGMA busy_timeout = 10000")
+    conn.execute("PRAGMA foreign_keys = ON")
+    if db_path not in _INITIALIZED:
+        conn.execute("PRAGMA journal_mode = WAL")      # persists in the file; harmless to repeat
+        conn.executescript(SCHEMA_PATH.read_text())
+        # lightweight migration for databases created before a column existed
+        existing = {r[1] for r in conn.execute("PRAGMA table_info(opportunities)")}
+        for col, ddl in {"fields": "TEXT NOT NULL DEFAULT '[]'", "deadline_label": "TEXT",
+                         "elig_quote": "TEXT", "elig_checked_at": "TEXT"}.items():
+            if col not in existing:
+                conn.execute(f"ALTER TABLE opportunities ADD COLUMN {col} {ddl}")
+        conn.commit()
+        _INITIALIZED.add(db_path)
     return conn
 
 
@@ -171,6 +184,56 @@ def upsert(conn: sqlite3.Connection, o: Opportunity) -> None:
         "UPDATE opportunities SET last_seen=?, status='active' WHERE source=? AND source_id=?",
         (now, o.source, o.source_id),
     )
+    apply_check(conn, o.source, o.source_id)
+
+
+_OPP_FIELDS = {f.name for f in fields(Opportunity)}
+
+
+def apply_check(conn: sqlite3.Connection, source: str, source_id: str) -> bool:
+    """Merge what enrich.py learned from the official page into the opportunity row and recompute
+    its flag. Human-verified rows are never touched. Returns True if the row changed."""
+    row = conn.execute("SELECT * FROM opportunities WHERE source=? AND source_id=?", (source, source_id)).fetchone()
+    chk = conn.execute("SELECT * FROM eligibility_checks WHERE source=? AND source_id=?", (source, source_id)).fetchone()
+    if not row or not chk or row["verified"]:
+        return False
+    if not chk["fetch_ok"]:
+        conn.execute("UPDATE opportunities SET elig_checked_at=NULL, elig_quote=NULL WHERE id=?", (row["id"],))
+        return False
+    data = {k: row[k] for k in _OPP_FIELDS if k in row.keys()}
+    data["tags"] = json.loads(row["tags"] or "[]")
+    data["requires_us_citizen"] = bool(row["requires_us_citizen"])
+    data["requires_work_auth"] = bool(row["requires_work_auth"])
+    data["verified"] = False
+    data["eligibility_note"] = None            # let f1_flag write the note, then override below
+    o = Opportunity(**data)
+
+    # A trusted read of the actual page beats every scraper heuristic (regexes over a blog post,
+    # "invite only" flags), so it fully determines the nationality / employment fields. That also
+    # makes re-checks idempotent. Low-confidence reads leave the scraper's values alone.
+    trusted = chk["confidence"] in ("high", "medium")
+    if trusted:
+        o.open_to_intl = chk["international_ok"] if chk["international_ok"] in ("yes", "no") else "unknown"
+        o.requires_us_citizen = chk["international_ok"] == "no" and chk["restriction"] == "us_citizen_or_pr"
+        if o.category != "on_campus_job":
+            o.requires_work_auth = bool(chk["is_paid_job"])
+    flag, note = f1_flag(o)
+    if trusted and o.open_to_intl == "no" and not o.requires_us_citizen:
+        note = chk["note"] or "The organizer restricts entry to a specific group; read the rules page."
+    elif trusted and chk["international_ok"] == "depends":
+        note = (chk["note"] or "Open only to certain nationalities; check the rules page.") + " Confirm with your DSO."
+    elif chk["international_ok"] == "unknown" and flag != "not_eligible":
+        note = "We read the official page and it doesn't state nationality or visa rules. " + note
+    if trusted and chk["audience"] in ("professionals", "high_school"):
+        note += (" Note: the page reads as aimed at working professionals rather than enrolled students."
+                 if chk["audience"] == "professionals" else " Note: the page reads as aimed at high-school students.")
+    conn.execute(
+        """UPDATE opportunities SET open_to_intl=?, requires_us_citizen=?, requires_work_auth=?, f1_flag=?,
+           eligibility_note=?, elig_quote=?, elig_checked_at=? WHERE id=?""",
+        (o.open_to_intl, int(o.requires_us_citizen), int(o.requires_work_auth), flag, note,
+         (chk["quote"] or None) if trusted else None, chk["checked_at"], row["id"]),
+    )
+    return True
 
 
 def expire_past_deadlines(conn: sqlite3.Connection) -> int:

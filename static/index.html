@@ -53,6 +53,9 @@
   .pill.ghost { background:transparent; border:1px solid var(--line); color:var(--muted) }
   .desc { margin:8px 0 0; font-size:14px; color:var(--ink) }
   .elig { margin-top:12px; font-size:13px; padding:10px 12px; border-radius:12px; background:var(--soft); color:var(--ink) }
+  .elig .quote { margin-top:8px; padding-left:10px; border-left:2px solid var(--accent); font-style:italic; color:var(--ink) }
+  .elig .quote b { font-style:normal; font-weight:600; color:var(--muted); font-size:12px; display:block; margin-bottom:2px }
+  .elig .checked { margin-top:6px; font-size:11.5px; color:var(--muted) }
   .link { margin:12px 0 0; font-size:14px }
   .link a { color:var(--accent); text-decoration:none; font-weight:500 }
   .link small { color:var(--muted); margin-left:6px }
@@ -67,6 +70,7 @@
   /* ---- saved list ---- */
   .list a { display:block; padding:12px 14px; border:1px solid var(--line); border-radius:14px; background:var(--card); margin-bottom:8px; text-decoration:none }
   .list strong { font-weight:600 } .list small { color:var(--muted); display:block; margin-top:2px }
+  .list small b.soon { color:var(--soon); font-weight:600 }
   .list button { float:right; border:none; background:none; color:var(--muted); font-size:12px }
 
   /* ---- sheet (filters / submit) ---- */
@@ -109,6 +113,10 @@
   .seg { display:flex; gap:6px; flex-wrap:wrap }
   .seg .chip { padding:7px 12px }
   .f .hint { font-size:12px; color:var(--muted); margin-top:-4px }
+  .lead { font-size:15px; margin:4px 0 12px }
+  .f input.code { font-size:22px; letter-spacing:.3em; text-align:center; height:50px }
+  .banner { padding:12px 14px; border:1px dashed var(--line); border-radius:14px; margin-bottom:10px; font-size:13.5px; color:var(--muted); display:flex; gap:10px; align-items:center }
+  .banner button { border:none; background:var(--accent); color:var(--accent-ink); border-radius:999px; padding:6px 12px; font-size:13px; margin-left:auto; white-space:nowrap }
   .toast { position:fixed; left:50%; bottom:calc(24px + env(safe-area-inset-bottom)); transform:translate(-50%, 20px); background:var(--ink); color:var(--bg); padding:10px 16px; border-radius:12px; font-size:14px; opacity:0; transition:all .25s; z-index:30; pointer-events:none }
   .toast.show { opacity:1; transform:translate(-50%, 0) }
 </style>
@@ -118,6 +126,7 @@
 <div class="top">
   <div class="bar">
     <h1>Opportunities</h1>
+    <button class="icon" id="btnAccount" title="Account" aria-label="Account"><svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></button>
     <button class="icon" id="btnSubmit" title="Suggest an opportunity" aria-label="Suggest an opportunity"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
     <button class="icon" id="btnSaved" title="Saved" aria-label="Saved"><svg viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg><span class="dot" id="savedDot"></span></button>
     <button class="icon" id="btnFilters" title="Filters" aria-label="Filters"><svg viewBox="0 0 24 24"><path d="M4 6h16M7 12h10M10 18h4"/></svg><span class="dot" id="filterDot"></span></button>
@@ -151,6 +160,7 @@
         <span class="chip" data-v="conference">Conference</span><span class="chip" data-v="fellowship">Fellowship</span>
         <span class="chip" data-v="research">Research</span><span class="chip" data-v="scholarship">Scholarship</span>
         <span class="chip" data-v="on_campus_job">On-campus job</span><span class="chip" data-v="accelerator">Accelerator</span>
+        <span class="chip" data-v="other">Other</span>
       </div></details>
     <details data-group="field" id="majors"><summary>Major <span class="n"></span><svg class="chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></summary><div class="chips"></div></details>
     <details data-group="field" id="communities"><summary>Community <span class="n"></span><svg class="chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></summary><div class="chips"></div></details>
@@ -203,9 +213,34 @@
         <p class="hint">We flag F-1 eligibility from this. A reviewer double-checks before it goes live.</p></div>
       <div><label>Anything else the reviewer should know</label><textarea name="note" rows="2" placeholder="Where you found it, what makes it good, eligibility details…"></textarea></div>
       <div><label>Your email (optional, never shown)</label><input name="submitted_by" type="email"></div>
+      <!-- honeypot: humans never see this; bots that fill every field get a fake success -->
+      <div style="position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden" aria-hidden="true"><label>Website</label><input name="website" tabindex="-1" autocomplete="off"></div>
     </form>
   </div>
   <footer><button class="ghostbtn" id="cancelSubmit">Cancel</button><button class="primary" id="sendSubmit">Submit for review</button></footer>
+</div>
+
+<!-- Sign-in / account sheet -->
+<div class="sheet" id="authSheet" role="dialog" aria-label="Sign in">
+  <div class="grab"></div>
+  <header><h3 id="authTitle">Keep your saves</h3><button id="closeAuth">Close</button></header>
+  <div class="scroll">
+    <div id="authOut">
+      <p class="lead">Sign in with your name and email so your saved opportunities follow you to any device. No password: we email you a 6-digit code.</p>
+      <form class="f" id="authForm" novalidate>
+        <div><label>Name</label><input name="name" required autocomplete="name" placeholder="Your name"></div>
+        <div><label>Email</label><input name="email" type="email" required autocomplete="email" placeholder="you@university.edu"></div>
+        <div id="codeRow" hidden><label>Code from your email</label><input name="code" class="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="······"><p class="hint" id="codeHint"></p></div>
+      </form>
+      <p class="hint">We store your name and email to sync your saves and, later, to send deadline reminders. Never shared or sold.</p>
+    </div>
+    <div id="authIn" hidden>
+      <p class="lead">Signed in as <b id="meName"></b><br><span class="meta" id="meEmail"></span></p>
+      <p class="hint">Your saves are synced to this account on every device you sign in on.</p>
+    </div>
+  </div>
+  <footer id="authFooterOut"><button class="ghostbtn" id="authLater">Not now</button><button class="primary" id="authGo">Send code</button></footer>
+  <footer id="authFooterIn" hidden><button class="ghostbtn" id="authLogout">Sign out</button><button class="primary" id="authDone">Done</button></footer>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -216,6 +251,15 @@ const MAJORS = ["Tech & Computing","Business & Finance","Engineering","Health & 
                 "Social Sciences & Policy","Law & Government","Arts, Humanities & Design","Education","Multidisciplinary / General"];
 const COMMUNITIES = ["Women","Black","Latinx","LGBTQ+","Native American","First-gen / underrepresented","Beginner friendly"];
 let queue = [], busy = false, stats = {}, savedCount = 0;
+// Anonymous per-browser identity so swipes don't collide between visitors. Lives in localStorage;
+// clearing site data starts a fresh deck. Real accounts can replace this later.
+const USER = (() => {
+  try {
+    let u = localStorage.getItem('uid');
+    if (!u) { u = (crypto.randomUUID ? crypto.randomUUID() : 'u-' + Date.now().toString(36) + Math.random().toString(36).slice(2)); localStorage.setItem('uid', u); }
+    return u;
+  } catch { return 'u-' + Date.now().toString(36) + Math.random().toString(36).slice(2); }
+})();
 
 const chip = v => { const s = document.createElement('span'); s.className = 'chip'; s.dataset.v = v; s.innerHTML = `${v}<small></small>`; return s; };
 MAJORS.forEach(m => $('#majors .chips').appendChild(chip(m)));
@@ -232,6 +276,7 @@ function params() {
   p.set('online_only', opts.includes('online_only'));
   p.set('flags', opts.includes('strict') ? 'likely_ok' : 'likely_ok,check_dso');
   p.set('limit', 200);
+  p.set('user', USER);
   return p;
 }
 function activeFilterCount() { return sel('category').length + sel('field').length + sel('opts').length; }
@@ -292,7 +337,7 @@ function card(o) {
   const where = o.location_mode === 'online' ? 'Online' : o.location_mode === 'hybrid' ? (place ? place + ' · also virtual' : 'Hybrid')
               : o.location_mode === 'unknown' ? 'Location TBA' : (place || 'In person');
   el.innerHTML = `
-    ${o.image_url ? `<img src="${esc(o.image_url)}" alt="">` : ''}
+    ${o.image_url ? `<img src="${esc(o.image_url)}" alt="" loading="lazy" onerror="this.remove()">` : ''}
     <div class="body">
       <div class="pills"><span class="pill">${esc(o.category.replace('_',' '))}</span>${flag}${o.compensation_note ? `<span class="pill">${esc(o.compensation_note)}</span>` : ''}</div>
       <h2>${esc(o.title)}</h2>
@@ -300,7 +345,7 @@ function card(o) {
       ${whenText(o)}
       ${o.description ? `<p class="desc">${esc(o.description.slice(0, 200))}${o.description.length > 200 ? '…' : ''}</p>` : ''}
       ${o.fields.length ? `<div class="pills" style="margin-top:10px">${o.fields.map(t => `<span class="pill ghost">${esc(t)}</span>`).join('')}</div>` : ''}
-      <div class="elig">${esc(o.eligibility_note || '')}</div>
+      <div class="elig">${esc(o.eligibility_note || '')}${o.elig_quote ? `<div class="quote"><b>The official page says</b>“${esc(o.elig_quote)}”</div>` : ''}${o.elig_checked_at ? `<div class="checked">Official page read ${esc(o.elig_checked_at.slice(0, 10))}</div>` : ''}</div>
       <p class="link"><a href="${esc(o.url)}" target="_blank" rel="noopener">Open the official page ↗</a><small>via ${esc(o.source)}</small></p>
     </div>`;
   let x0 = null, y0 = null, dragging = false;
@@ -347,26 +392,86 @@ async function act(action) {
   const o = queue[0], top = $('#stack').lastElementChild;
   top.style.transition = ''; top.style.opacity = '0';
   top.style.transform = action === 'save' ? 'translateX(140%) rotate(12deg)' : 'translateX(-140%) rotate(-12deg)';
-  await fetch('/api/swipe', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ opportunity_id: o.id, action }) });
-  setTimeout(() => { queue.shift(); render(); busy = false; updateCount(); refreshSaved(); }, 240);
+  await fetch('/api/swipe', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ opportunity_id: o.id, action, user: USER }) });
+  setTimeout(() => {
+    queue.shift(); render(); busy = false; updateCount(); refreshSaved();
+    // First save while anonymous: offer sign-in once, so saves aren't stuck in this browser.
+    if (action === 'save' && !me && !nudged()) { markNudged(); openAuth(); }
+  }, 240);
 }
+
+/* ---------- account ---------- */
+let me = null, authStep = 'email';
+const nudged = () => { try { return !!localStorage.getItem('authNudged'); } catch { return true; } };
+const markNudged = () => { try { localStorage.setItem('authNudged', '1'); } catch {} };
+async function loadMe() {
+  try { me = (await (await fetch('/api/auth/me')).json()).user; } catch { me = null; }
+  renderMe();
+}
+function renderMe() {
+  $('#btnAccount').classList.toggle('on', !!me);
+  $('#authOut').hidden = !!me; $('#authIn').hidden = !me;
+  $('#authFooterOut').hidden = !!me; $('#authFooterIn').hidden = !me;
+  $('#authTitle').textContent = me ? 'Account' : 'Keep your saves';
+  if (me) { $('#meName').textContent = me.name; $('#meEmail').textContent = me.email; }
+}
+function openAuth() {
+  authStep = 'email'; $('#codeRow').hidden = true; $('#authGo').textContent = 'Send code'; $('#authForm [name=code]').value = '';
+  openSheet('#authSheet');
+}
+$('#btnAccount').onclick = openAuth;
+$('#closeAuth').onclick = closeSheets; $('#authDone').onclick = closeSheets;
+$('#authLater').onclick = () => { markNudged(); closeSheets(); };
+$('#authGo').onclick = async () => {
+  const f = new FormData($('#authForm')), name = (f.get('name') || '').toString().trim(), email = (f.get('email') || '').toString().trim();
+  const btn = $('#authGo');
+  if (authStep === 'email') {
+    if (!name || !email) { toast('Name and email, please.'); return; }
+    btn.disabled = true;
+    const r = await fetch('/api/auth/request', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ name, email }) });
+    const d = await r.json().catch(() => ({})); btn.disabled = false;
+    if (!r.ok) { toast(d.detail || 'Could not send the code.'); return; }
+    authStep = 'code'; $('#codeRow').hidden = false; btn.textContent = 'Sign in';
+    $('#codeHint').textContent = d.delivered ? `We emailed a code to ${email}. It expires in 10 minutes.`
+                                             : 'Email isn’t set up on this server yet: the code was printed to the server log.';
+    $('#authForm [name=code]').focus();
+  } else {
+    const code = (f.get('code') || '').toString().replace(/\D/g, '');
+    if (code.length !== 6) { toast('Enter the 6-digit code.'); return; }
+    btn.disabled = true;
+    const r = await fetch('/api/auth/verify', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ email, code, anon_user: USER }) });
+    const d = await r.json().catch(() => ({})); btn.disabled = false;
+    if (!r.ok) { toast(d.detail || 'That didn’t work.'); return; }
+    me = d.user; renderMe(); closeSheets(); markNudged();
+    toast(`Signed in as ${me.name}` + (d.merged ? ` · ${d.merged} item${d.merged === 1 ? '' : 's'} synced` : ''));
+    viewingSaved ? showSaved() : load();
+  }
+};
+$('#authForm').addEventListener('submit', e => { e.preventDefault(); $('#authGo').click(); });
+$('#authLogout').onclick = async () => {
+  await fetch('/api/auth/logout', { method: 'POST' });
+  me = null; renderMe(); closeSheets(); toast('Signed out.');
+  viewingSaved ? showSaved() : load();
+};
 
 /* ---------- saved ---------- */
 async function refreshSaved() {
-  const s = await (await fetch('/api/saved')).json();
+  const s = await (await fetch('/api/saved?user=' + encodeURIComponent(USER))).json();
   savedCount = s.length; $('#savedDot').textContent = s.length || '';
   return s;
 }
 async function showSaved() {
   const s = await refreshSaved(), el = $('#saved');
-  el.innerHTML = s.length ? s.map(o => `
+  const banner = me ? '' : `<div class="banner">Saves live in this browser only.<button id="savedSignin">Sign in to keep them</button></div>`;
+  el.innerHTML = banner + (s.length ? s.map(o => `
     <a href="${esc(o.url)}" target="_blank" rel="noopener">
       <button data-id="${o.id}">remove</button>
       <strong>${esc(o.title)}</strong>
-      <small>${esc(o.category.replace('_',' '))} · ${o.deadline ? esc(o.deadline_label || 'deadline') + ' ' + o.deadline : 'no deadline'} · ${o.f1_flag === 'likely_ok' ? 'likely OK' : 'check with DSO'}</small>
-    </a>`).join('') : '<div class="empty">Nothing saved yet.</div>';
-  el.querySelectorAll('button').forEach(b => b.onclick = async e => {
-    e.preventDefault(); await fetch('/api/swipe/' + b.dataset.id, { method: 'DELETE' }); showSaved(); load();
+      <small>${esc(o.category.replace('_',' '))} · ${o.deadline ? esc(o.deadline_label || 'deadline') + ' ' + o.deadline + (relDays(o.deadline) < 0 ? ' · <b class="soon">passed</b>' : '') : 'no deadline'} · ${o.f1_flag === 'likely_ok' ? 'likely OK' : 'check with DSO'}</small>
+    </a>`).join('') : '<div class="empty">Nothing saved yet.</div>');
+  const si = $('#savedSignin'); if (si) si.onclick = openAuth;
+  el.querySelectorAll('a button').forEach(b => b.onclick = async e => {
+    e.preventDefault(); await fetch('/api/swipe/' + b.dataset.id + '?user=' + encodeURIComponent(USER), { method: 'DELETE' }); showSaved(); load();
   });
 }
 let viewingSaved = false;
@@ -419,7 +524,7 @@ $('#sendSubmit').onclick = async () => {
     open_to_intl: segVal('open_to_intl') || 'unknown',
     requires_us_citizen: segVal('open_to_intl') === 'no',
     requires_work_auth: segVal('compensation_type') === 'wage' && segVal('category') !== 'on_campus_job',
-    note: g('note'), submitted_by: g('submitted_by'),
+    note: g('note'), submitted_by: g('submitted_by'), website: g('website'),
   };
   if (!body.url || !body.title || !body.category) { toast('Link, name and type are required.'); return; }
   const r = await fetch('/api/submit', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
@@ -432,7 +537,7 @@ $('#sendSubmit').onclick = async () => {
 };
 
 restoreFilters();
-loadStats().then(load);
+Promise.all([loadStats(), loadMe()]).then(load);
 </script>
 </body>
 </html>

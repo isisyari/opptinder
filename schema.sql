@@ -63,6 +63,55 @@ CREATE TABLE IF NOT EXISTS submissions (
     reviewed_at     TEXT
 );
 
+-- What Claude read on the official page (enrich.py). Kept separately from opportunities so a
+-- scraper re-run can't wipe it: models.upsert re-applies the check to the row after every write.
+CREATE TABLE IF NOT EXISTS eligibility_checks (
+    source              TEXT NOT NULL,
+    source_id           TEXT NOT NULL,
+    checked_url         TEXT,                       -- the page that was actually read
+    fetch_ok            INTEGER NOT NULL DEFAULT 1, -- 0 = page unreachable / empty, nothing learned
+    international_ok    TEXT NOT NULL,              -- yes | no | depends | unknown
+    restriction         TEXT,                       -- none | us_citizen_or_pr | specific_nationalities | region_residents | other
+    audience            TEXT,                       -- students | professionals | high_school | anyone | unknown
+    quote               TEXT,                       -- verbatim sentence from the page, shown on the card
+    note                TEXT,                       -- one-line plain-English summary of the restriction
+    is_paid_job         INTEGER NOT NULL DEFAULT 0, -- page describes salaried / hourly employment
+    confidence          TEXT,                       -- high | medium | low
+    model               TEXT,
+    checked_at          TEXT NOT NULL,
+    PRIMARY KEY (source, source_id)
+);
+
+-- Accounts (passwordless: name + email, verified by a 6-digit code sent to the address).
+-- Signed-in users' swipes are stored under user_id = 'u:<users.id>'; anonymous browsers use their UUID.
+CREATE TABLE IF NOT EXISTS users (
+    id              INTEGER PRIMARY KEY,
+    email           TEXT NOT NULL UNIQUE,       -- lowercased
+    name            TEXT NOT NULL,
+    domain          TEXT NOT NULL,              -- part after @, for "which schools use this"
+    created_at      TEXT NOT NULL,
+    last_seen       TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS login_codes (
+    id              INTEGER PRIMARY KEY,
+    email           TEXT NOT NULL,
+    name            TEXT NOT NULL,              -- carried to users.name on first sign-in
+    code_hash       TEXT NOT NULL,              -- sha256 of the 6 digits; the code itself is never stored
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    consumed        INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL,
+    expires_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_codes_email ON login_codes (email, created_at);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash      TEXT PRIMARY KEY,           -- sha256 of the cookie value
+    user_id         INTEGER NOT NULL REFERENCES users(id),
+    created_at      TEXT NOT NULL,
+    expires_at      TEXT NOT NULL
+);
+
 -- Swipe log. user_id is a free string so this works before you add auth.
 CREATE TABLE IF NOT EXISTS swipes (
     id              INTEGER PRIMARY KEY,

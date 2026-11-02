@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+import threading
+from contextlib import asynccontextmanager
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
@@ -15,12 +17,35 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from models import CATEGORIES, Opportunity, connect, upsert
+import ingest as ingest_mod
+import mailer
+from auth import client_ip, current_user_id, rate_limit, router as auth_router
+from models import CATEGORIES, Opportunity, connect, expire_past_deadlines, upsert
 
-app = FastAPI(title="F-1 Opportunities")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    if not ADMIN_TOKEN:
+        print("[startup] WARNING: ADMIN_TOKEN is not set. Admin endpoints (review queue, ingest) answer "
+              "localhost only. Set ADMIN_TOKEN before exposing this server publicly.")
+    if not mailer.configured():
+        print("[startup] RESEND_API_KEY is not set: sign-in codes are printed to this log instead of emailed.")
+    # Expiry used to run only inside ingest.py, so a stale DB served dead cards for weeks.
+    # Do it on every boot too; the feed query below also filters by date as a belt-and-braces.
+    with connect() as conn:
+        n = expire_past_deadlines(conn)
+        conn.commit()
+    if n:
+        print(f"[startup] expired {n} past-deadline opportunities")
+    yield
+
+
+app = FastAPI(title="F-1 Opportunities", lifespan=lifespan)
 STATIC = Path(__file__).parent / "static"
 FLAGS = {"likely_ok", "check_dso", "unknown", "not_eligible"}
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "").strip()
+SUBMIT_LIMIT = 5                 # community submissions per IP ...
+SUBMIT_WINDOW = 60 * 60          # ... per hour
 
 
 def _now() -> str:
@@ -37,6 +62,9 @@ def require_admin(request: Request, x_admin_token: str | None = Header(default=N
         raise HTTPException(403, "admin is localhost-only until ADMIN_TOKEN is set")
 
 
+app.include_router(auth_router)
+
+
 def _row(r) -> dict:
     d = dict(r)
     d["tags"] = json.loads(d["tags"] or "[]")
@@ -46,7 +74,7 @@ def _row(r) -> dict:
 
 @app.get("/api/feed")
 def feed(
-    user: str = "local",
+    user: str = Depends(current_user_id),               # account if signed in, else the browser's anonymous id
     category: list[str] | None = Query(default=None),
     field: list[str] | None = Query(default=None),      # majors / communities, OR-ed together
     q: str | None = None,                               # free-text search
@@ -59,10 +87,11 @@ def feed(
     sql = """
         SELECT o.* FROM opportunities o
         WHERE o.status = 'active'
+          AND (o.deadline IS NULL OR o.deadline >= :today)
           AND o.id NOT IN (SELECT opportunity_id FROM swipes WHERE user_id = :user)
           AND o.f1_flag IN (%s)
     """ % ",".join(f"'{f}'" for f in wanted)
-    params: dict = {"user": user}
+    params: dict = {"user": user, "today": date.today().isoformat()}
     if category:
         sql += " AND o.category IN (%s)" % ",".join(f":c{i}" for i in range(len(category)))
         params.update({f"c{i}": c for i, c in enumerate(category)})
@@ -78,10 +107,28 @@ def feed(
         # hybrid counts as reachable; unknown location (e.g. "Location TBA") is kept rather than hidden
         sql += """ AND (o.location_mode IN ('online', 'hybrid', 'unknown')
                         OR o.country IN ('United States', 'USA', 'US') OR o.country IS NULL)"""
-    sql += " ORDER BY (o.deadline IS NULL), o.deadline ASC LIMIT :limit"
+    # Mix the deck. Pure deadline order made the first 50 cards all hackathons (the only category with
+    # lots of near-term deadlines) while research rows with no deadline never surfaced. Instead:
+    #   1. anything due in the next 2 days comes first, so nothing urgent is buried;
+    #   2. then round-robin across categories (soonest of each, then second of each, ...).
+    sql = f"""
+        SELECT * FROM (
+            SELECT o.*,
+                   ROW_NUMBER() OVER (PARTITION BY o.category
+                                      ORDER BY (o.deadline IS NULL), o.deadline, (o.f1_flag <> 'likely_ok'), o.verified DESC, o.id) AS rn,
+                   (o.deadline IS NOT NULL AND o.deadline <= date(:today, '+2 days')) AS urgent
+            FROM ({sql.replace('SELECT o.* FROM opportunities o', 'SELECT * FROM opportunities o')}) o
+        )
+        ORDER BY urgent DESC, rn, (deadline IS NULL), deadline, id
+        LIMIT :limit"""
     params["limit"] = limit
     with connect() as conn:
-        return [_row(r) for r in conn.execute(sql, params)]
+        rows = []
+        for r in conn.execute(sql, params):
+            d = _row(r)
+            d.pop("rn", None); d.pop("urgent", None)
+            rows.append(d)
+        return rows
 
 
 class Swipe(BaseModel):
@@ -91,21 +138,22 @@ class Swipe(BaseModel):
 
 
 @app.post("/api/swipe")
-def swipe(s: Swipe):
+def swipe(s: Swipe, request: Request):
     if s.action not in ("save", "pass"):
         raise HTTPException(400, "action must be save or pass")
+    uid = current_user_id(request, s.user)
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     with connect() as conn:
         conn.execute(
             """INSERT INTO swipes (user_id, opportunity_id, action, created_at) VALUES (?,?,?,?)
                ON CONFLICT(user_id, opportunity_id) DO UPDATE SET action=excluded.action, created_at=excluded.created_at""",
-            (s.user, s.opportunity_id, s.action, now),
+            (uid, s.opportunity_id, s.action, now),
         )
     return {"ok": True}
 
 
 @app.get("/api/saved")
-def saved(user: str = "local"):
+def saved(user: str = Depends(current_user_id)):
     with connect() as conn:
         rows = conn.execute(
             """SELECT o.* FROM opportunities o JOIN swipes s ON s.opportunity_id = o.id
@@ -117,7 +165,7 @@ def saved(user: str = "local"):
 
 
 @app.delete("/api/swipe/{opportunity_id}")
-def unswipe(opportunity_id: int, user: str = "local"):
+def unswipe(opportunity_id: int, user: str = Depends(current_user_id)):
     with connect() as conn:
         conn.execute("DELETE FROM swipes WHERE user_id=? AND opportunity_id=?", (user, opportunity_id))
     return {"ok": True}
@@ -133,6 +181,7 @@ def stats():
             "by_field": {r[0]: r[1] for r in conn.execute(
                 "SELECT j.value, COUNT(DISTINCT o.id) FROM opportunities o, json_each(o.fields) j WHERE o.status='active' GROUP BY j.value")},
             "total_active": conn.execute("SELECT COUNT(*) FROM opportunities WHERE status='active'").fetchone()[0],
+            "users": conn.execute("SELECT COUNT(*) FROM users").fetchone()[0],
         }
 
 
@@ -161,9 +210,20 @@ class SubmissionIn(BaseModel):
     # meta (not part of the opportunity)
     submitted_by: str | None = None
     note: str | None = None
+    website: str | None = None   # honeypot; humans never see the field
+
+
+_MAX_LEN = {"url": 500, "title": 200, "organizer": 200, "description": 2000, "compensation_note": 200,
+            "eligibility_note": 500, "country": 100, "city": 100, "note": 2000, "submitted_by": 200}
 
 
 def _validate(s: SubmissionIn) -> None:
+    for f, n in _MAX_LEN.items():
+        v = getattr(s, f)
+        if v and len(v) > n:
+            raise HTTPException(400, f"{f} is too long (max {n} characters)")
+    if len(s.tags) > 20 or any(len(t) > 50 for t in s.tags):
+        raise HTTPException(400, "too many / too long tags")
     if not s.url.lower().startswith(("http://", "https://")):
         raise HTTPException(400, "url must start with http:// or https://")
     if not s.title.strip():
@@ -189,6 +249,7 @@ def _payload(s: SubmissionIn) -> dict:
     d = s.model_dump()
     d.pop("submitted_by", None)
     d.pop("note", None)
+    d.pop("website", None)
     d["title"] = d["title"].strip()
     d["url"] = d["url"].strip()
     d["tags"] = [t.strip() for t in d["tags"] if t and t.strip()]
@@ -202,7 +263,11 @@ def _sub_row(r) -> dict:
 
 
 @app.post("/api/submit")
-def submit(s: SubmissionIn):
+def submit(s: SubmissionIn, request: Request):
+    if s.website:                    # bot filled the hidden field: pretend it worked, store nothing
+        return {"ok": True, "id": 0}
+    rate_limit(f"submit:{client_ip(request)}", SUBMIT_LIMIT, SUBMIT_WINDOW,
+               "Too many submissions from this address; try again in an hour.")
     _validate(s)
     with connect() as conn:
         dup = conn.execute("SELECT id, title FROM opportunities WHERE url = ? AND status = 'active'", (s.url.strip(),)).fetchone()
@@ -260,6 +325,54 @@ def reject(sid: int, body: Reject | None = None):
         if cur.rowcount == 0:
             raise HTTPException(404, "no pending submission with that id")
     return {"ok": True}
+
+
+@app.get("/api/admin/users", dependencies=[Depends(require_admin)])
+def list_users():
+    """Who has signed in: name, email, school domain, join date, how many cards they've saved."""
+    with connect() as conn:
+        rows = conn.execute(
+            """SELECT u.id, u.name, u.email, u.domain, u.created_at, u.last_seen,
+                      (SELECT COUNT(*) FROM swipes s WHERE s.user_id = 'u:' || u.id AND s.action = 'save') AS saved,
+                      (SELECT COUNT(*) FROM swipes s WHERE s.user_id = 'u:' || u.id) AS swipes
+               FROM users u ORDER BY u.created_at DESC""").fetchall()
+        by_domain = {r[0]: r[1] for r in conn.execute("SELECT domain, COUNT(*) FROM users GROUP BY domain ORDER BY 2 DESC")}
+    return {"users": [dict(r) for r in rows], "by_domain": by_domain}
+
+
+# ---------------------------------------------------------------- scheduled ingest
+# POST /api/admin/ingest starts a run in a background thread and returns at once (a full run takes
+# minutes, longer than most proxies allow a request). GET /api/admin/ingest reports the last run.
+# The nightly GitHub Actions workflow (.github/workflows/ingest.yml) is what calls this in production.
+
+_ingest_lock = threading.Lock()
+_ingest_state: dict = {"running": False, "last": None, "log": []}
+
+
+def _ingest_worker(names: list[str] | None, enrich: bool) -> None:
+    lines: list[str] = []
+    try:
+        summary = ingest_mod.run(names, log=lambda s: lines.append(s), enrich=enrich)
+    except Exception as e:                    # a bug in ingest must not take the server down
+        summary = {"error": f"{type(e).__name__}: {e}"}
+    finally:
+        _ingest_state.update(running=False, last=summary, log=lines[-200:])
+        _ingest_lock.release()
+
+
+@app.post("/api/admin/ingest", dependencies=[Depends(require_admin)])
+def start_ingest(source: list[str] | None = Query(default=None), enrich: bool = False):
+    """enrich=true also runs enrich.py afterwards (needs ANTHROPIC_API_KEY on the server)."""
+    if not _ingest_lock.acquire(blocking=False):
+        raise HTTPException(409, "an ingest run is already in progress")
+    _ingest_state.update(running=True, started=_now())
+    threading.Thread(target=_ingest_worker, args=(source, enrich), daemon=True, name="ingest").start()
+    return {"ok": True, "started": _ingest_state["started"], "sources": source or "all", "enrich": enrich}
+
+
+@app.get("/api/admin/ingest", dependencies=[Depends(require_admin)])
+def ingest_status():
+    return _ingest_state
 
 
 @app.get("/admin")

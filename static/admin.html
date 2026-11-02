@@ -31,12 +31,15 @@
   .note { font-size:13px; color:var(--muted); background:var(--bg); border-radius:8px; padding:8px 10px; margin-top:6px }
   .empty { color:var(--muted); text-align:center; padding:60px 0 }
   .flash { font-size:13px; color:var(--ok); margin-left:auto }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; background:var(--card); border:1px solid var(--line); border-radius:12px; overflow:hidden }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line) } th { font-weight:600; color:var(--muted); font-size:12px }
+  .pills { display:flex; gap:6px; flex-wrap:wrap; margin:0 0 12px } .pill { font-size:12px; padding:3px 9px; border-radius:999px; border:1px solid var(--line) }
 </style>
 </head>
 <body>
 <header>
   <h1>Review queue</h1>
-  <div class="tabs"><button class="on" data-s="pending">Pending</button><button data-s="approved">Approved</button><button data-s="rejected">Rejected</button></div>
+  <div class="tabs"><button class="on" data-s="pending">Pending</button><button data-s="approved">Approved</button><button data-s="rejected">Rejected</button><button data-s="users">Users</button></div>
   <input type="password" id="token" placeholder="admin token (if set)" title="Only needed when ADMIN_TOKEN is set on the server">
 </header>
 <main id="list"></main>
@@ -53,7 +56,20 @@ function headers() { const h = {'Content-Type': 'application/json'}; if ($('#tok
 const opt = (list, v) => list.map(x => `<option ${x === v ? 'selected' : ''}>${x}</option>`).join('');
 const esc = s => (s ?? '').toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
+async function loadUsers() {
+  const r = await fetch('/api/admin/users', { headers: headers() });
+  if (!r.ok) { $('#list').innerHTML = `<div class="empty">${r.status === 401 ? 'Enter the admin token above.' : 'Admin is localhost-only until ADMIN_TOKEN is set.'}</div>`; return; }
+  const d = await r.json();
+  if (!d.users.length) { $('#list').innerHTML = '<div class="empty">Nobody has signed in yet.</div>'; return; }
+  const pills = Object.entries(d.by_domain).map(([k, v]) => `<span class="pill">${esc(k)} · ${v}</span>`).join('');
+  $('#list').innerHTML = `<div class="pills"><span class="pill">${d.users.length} user${d.users.length === 1 ? '' : 's'}</span>${pills}</div>
+    <table><tr><th>Name</th><th>Email</th><th>Joined</th><th>Last seen</th><th>Saved</th><th>Swipes</th></tr>
+    ${d.users.map(u => `<tr><td>${esc(u.name)}</td><td>${esc(u.email)}</td><td>${u.created_at.slice(0, 10)}</td><td>${u.last_seen.slice(0, 10)}</td><td>${u.saved}</td><td>${u.swipes}</td></tr>`).join('')}
+    </table>`;
+}
+
 async function load() {
+  if (status === 'users') return loadUsers();
   const r = await fetch('/api/admin/submissions?status=' + status, { headers: headers() });
   if (!r.ok) { $('#list').innerHTML = `<div class="empty">${r.status === 401 ? 'Enter the admin token above.' : 'Admin is localhost-only until ADMIN_TOKEN is set.'}</div>`; return; }
   const subs = await r.json();
