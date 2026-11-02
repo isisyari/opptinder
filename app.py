@@ -84,22 +84,23 @@ def feed(
     limit: int = 30,
 ):
     wanted = {f for f in flags.split(",") if f in FLAGS} or {"likely_ok", "check_dso"}
-    sql = """
-        SELECT o.* FROM opportunities o
+    flag_list = ",".join(f"'{f}'" for f in wanted)
+    sql = f"""
+        SELECT * FROM opportunities o
         WHERE o.status = 'active'
-          AND (o.deadline IS NULL OR o.deadline >= :today)
-          AND o.id NOT IN (SELECT opportunity_id FROM swipes WHERE user_id = :user)
-          AND o.f1_flag IN (%s)
-    """ % ",".join(f"'{f}'" for f in wanted)
+          AND (o.deadline IS NULL OR o.deadline >= %(today)s)
+          AND o.id NOT IN (SELECT opportunity_id FROM swipes WHERE user_id = %(user)s)
+          AND o.f1_flag IN ({flag_list})
+    """
     params: dict = {"user": user, "today": date.today().isoformat()}
     if category:
-        sql += " AND o.category IN (%s)" % ",".join(f":c{i}" for i in range(len(category)))
-        params.update({f"c{i}": c for i, c in enumerate(category)})
+        sql += " AND o.category = ANY(%(category)s)"
+        params["category"] = list(category)
     if field:
-        sql += " AND EXISTS (SELECT 1 FROM json_each(o.fields) WHERE value IN (%s))" % ",".join(f":f{i}" for i in range(len(field)))
-        params.update({f"f{i}": f for i, f in enumerate(field)})
+        sql += " AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(o.fields::jsonb) v WHERE v = ANY(%(field)s))"
+        params["field"] = list(field)
     if q and q.strip():
-        sql += " AND (o.title LIKE :q OR o.description LIKE :q OR o.tags LIKE :q OR o.organizer LIKE :q)"
+        sql += " AND (o.title ILIKE %(q)s OR o.description ILIKE %(q)s OR o.tags ILIKE %(q)s OR o.organizer ILIKE %(q)s)"
         params["q"] = f"%{q.strip()}%"
     if online_only:
         sql += " AND o.location_mode = 'online'"
@@ -116,11 +117,11 @@ def feed(
             SELECT o.*,
                    ROW_NUMBER() OVER (PARTITION BY o.category
                                       ORDER BY (o.deadline IS NULL), o.deadline, (o.f1_flag <> 'likely_ok'), o.verified DESC, o.id) AS rn,
-                   (o.deadline IS NOT NULL AND o.deadline <= date(:today, '+2 days')) AS urgent
-            FROM ({sql.replace('SELECT o.* FROM opportunities o', 'SELECT * FROM opportunities o')}) o
-        )
+                   (o.deadline IS NOT NULL AND o.deadline <= (%(today)s::date + 2)::text) AS urgent
+            FROM ({sql}) AS o
+        ) AS ranked
         ORDER BY urgent DESC, rn, (deadline IS NULL), deadline, id
-        LIMIT :limit"""
+        LIMIT %(limit)s"""
     params["limit"] = limit
     with connect() as conn:
         rows = []
@@ -145,8 +146,8 @@ def swipe(s: Swipe, request: Request):
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     with connect() as conn:
         conn.execute(
-            """INSERT INTO swipes (user_id, opportunity_id, action, created_at) VALUES (?,?,?,?)
-               ON CONFLICT(user_id, opportunity_id) DO UPDATE SET action=excluded.action, created_at=excluded.created_at""",
+            """INSERT INTO swipes (user_id, opportunity_id, action, created_at) VALUES (%s,%s,%s,%s)
+               ON CONFLICT (user_id, opportunity_id) DO UPDATE SET action=EXCLUDED.action, created_at=EXCLUDED.created_at""",
             (uid, s.opportunity_id, s.action, now),
         )
     return {"ok": True}
@@ -157,7 +158,7 @@ def saved(user: str = Depends(current_user_id)):
     with connect() as conn:
         rows = conn.execute(
             """SELECT o.* FROM opportunities o JOIN swipes s ON s.opportunity_id = o.id
-               WHERE s.user_id = ? AND s.action = 'save'
+               WHERE s.user_id = %s AND s.action = 'save'
                ORDER BY (o.deadline IS NULL), o.deadline ASC""",
             (user,),
         )
@@ -167,21 +168,23 @@ def saved(user: str = Depends(current_user_id)):
 @app.delete("/api/swipe/{opportunity_id}")
 def unswipe(opportunity_id: int, user: str = Depends(current_user_id)):
     with connect() as conn:
-        conn.execute("DELETE FROM swipes WHERE user_id=? AND opportunity_id=?", (user, opportunity_id))
+        conn.execute("DELETE FROM swipes WHERE user_id=%s AND opportunity_id=%s", (user, opportunity_id))
     return {"ok": True}
 
 
 @app.get("/api/stats")
 def stats():
+    def counts(conn, sql):
+        return {r["k"]: r["n"] for r in conn.execute(sql)}
     with connect() as conn:
         return {
-            "by_source": {r[0]: r[1] for r in conn.execute("SELECT source, COUNT(*) FROM opportunities WHERE status='active' GROUP BY source")},
-            "by_flag": {r[0]: r[1] for r in conn.execute("SELECT f1_flag, COUNT(*) FROM opportunities WHERE status='active' GROUP BY f1_flag")},
-            "by_category": {r[0]: r[1] for r in conn.execute("SELECT category, COUNT(*) FROM opportunities WHERE status='active' GROUP BY category")},
-            "by_field": {r[0]: r[1] for r in conn.execute(
-                "SELECT j.value, COUNT(DISTINCT o.id) FROM opportunities o, json_each(o.fields) j WHERE o.status='active' GROUP BY j.value")},
-            "total_active": conn.execute("SELECT COUNT(*) FROM opportunities WHERE status='active'").fetchone()[0],
-            "users": conn.execute("SELECT COUNT(*) FROM users").fetchone()[0],
+            "by_source": counts(conn, "SELECT source AS k, COUNT(*) AS n FROM opportunities WHERE status='active' GROUP BY source"),
+            "by_flag": counts(conn, "SELECT f1_flag AS k, COUNT(*) AS n FROM opportunities WHERE status='active' GROUP BY f1_flag"),
+            "by_category": counts(conn, "SELECT category AS k, COUNT(*) AS n FROM opportunities WHERE status='active' GROUP BY category"),
+            "by_field": counts(conn, "SELECT v AS k, COUNT(DISTINCT o.id) AS n FROM opportunities o, jsonb_array_elements_text(o.fields::jsonb) v "
+                                     "WHERE o.status='active' GROUP BY v"),
+            "total_active": conn.execute("SELECT COUNT(*) AS n FROM opportunities WHERE status='active'").fetchone()["n"],
+            "users": conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"],
         }
 
 
@@ -270,30 +273,30 @@ def submit(s: SubmissionIn, request: Request):
                "Too many submissions from this address; try again in an hour.")
     _validate(s)
     with connect() as conn:
-        dup = conn.execute("SELECT id, title FROM opportunities WHERE url = ? AND status = 'active'", (s.url.strip(),)).fetchone()
+        dup = conn.execute("SELECT id, title FROM opportunities WHERE url = %s AND status = 'active'", (s.url.strip(),)).fetchone()
         if dup:
             return {"ok": True, "duplicate": True, "title": dup["title"]}
-        pending = conn.execute("SELECT id FROM submissions WHERE status='pending' AND json_extract(payload,'$.url') = ?", (s.url.strip(),)).fetchone()
+        pending = conn.execute("SELECT id FROM submissions WHERE status='pending' AND (payload::jsonb->>'url') = %s", (s.url.strip(),)).fetchone()
         if pending:
             return {"ok": True, "duplicate": True, "pending": True}
-        cur = conn.execute(
-            "INSERT INTO submissions (payload, submitted_by, note, created_at) VALUES (?,?,?,?)",
+        sid = conn.execute(
+            "INSERT INTO submissions (payload, submitted_by, note, created_at) VALUES (%s,%s,%s,%s) RETURNING id",
             (json.dumps(_payload(s)), (s.submitted_by or "").strip() or None, (s.note or "").strip() or None, _now()),
-        )
-    return {"ok": True, "id": cur.lastrowid}
+        ).fetchone()["id"]
+    return {"ok": True, "id": sid}
 
 
 @app.get("/api/admin/submissions", dependencies=[Depends(require_admin)])
 def list_submissions(status: str = "pending"):
     with connect() as conn:
-        rows = conn.execute("SELECT * FROM submissions WHERE status = ? ORDER BY created_at DESC", (status,))
+        rows = conn.execute("SELECT * FROM submissions WHERE status = %s ORDER BY created_at DESC", (status,))
         return [_sub_row(r) for r in rows]
 
 
 @app.post("/api/admin/submissions/{sid}/approve", dependencies=[Depends(require_admin)])
 def approve(sid: int, edited: SubmissionIn | None = None):
     with connect() as conn:
-        row = conn.execute("SELECT * FROM submissions WHERE id = ?", (sid,)).fetchone()
+        row = conn.execute("SELECT * FROM submissions WHERE id = %s", (sid,)).fetchone()
         if not row:
             raise HTTPException(404, "no such submission")
         if edited is not None:
@@ -304,10 +307,10 @@ def approve(sid: int, edited: SubmissionIn | None = None):
         o = Opportunity(source="community", source_id=str(sid), verified=True, **payload)
         upsert(conn, o)
         conn.execute(
-            "UPDATE submissions SET status='approved', payload=?, reviewed_at=? WHERE id=?",
+            "UPDATE submissions SET status='approved', payload=%s, reviewed_at=%s WHERE id=%s",
             (json.dumps(payload), _now(), sid),
         )
-        opp = conn.execute("SELECT id, f1_flag, eligibility_note FROM opportunities WHERE source='community' AND source_id=?", (str(sid),)).fetchone()
+        opp = conn.execute("SELECT id, f1_flag, eligibility_note FROM opportunities WHERE source='community' AND source_id=%s", (str(sid),)).fetchone()
     return {"ok": True, "opportunity_id": opp["id"], "f1_flag": opp["f1_flag"], "eligibility_note": opp["eligibility_note"]}
 
 
@@ -319,7 +322,7 @@ class Reject(BaseModel):
 def reject(sid: int, body: Reject | None = None):
     with connect() as conn:
         cur = conn.execute(
-            "UPDATE submissions SET status='rejected', review_note=?, reviewed_at=? WHERE id=? AND status='pending'",
+            "UPDATE submissions SET status='rejected', review_note=%s, reviewed_at=%s WHERE id=%s AND status='pending'",
             ((body.reason if body else None), _now(), sid),
         )
         if cur.rowcount == 0:
@@ -333,17 +336,18 @@ def list_users():
     with connect() as conn:
         rows = conn.execute(
             """SELECT u.id, u.name, u.email, u.domain, u.created_at, u.last_seen,
-                      (SELECT COUNT(*) FROM swipes s WHERE s.user_id = 'u:' || u.id AND s.action = 'save') AS saved,
-                      (SELECT COUNT(*) FROM swipes s WHERE s.user_id = 'u:' || u.id) AS swipes
+                      (SELECT COUNT(*) FROM swipes s WHERE s.user_id = 'u:' || u.id::text AND s.action = 'save') AS saved,
+                      (SELECT COUNT(*) FROM swipes s WHERE s.user_id = 'u:' || u.id::text) AS swipes
                FROM users u ORDER BY u.created_at DESC""").fetchall()
-        by_domain = {r[0]: r[1] for r in conn.execute("SELECT domain, COUNT(*) FROM users GROUP BY domain ORDER BY 2 DESC")}
+        by_domain = {r["k"]: r["n"] for r in conn.execute("SELECT domain AS k, COUNT(*) AS n FROM users GROUP BY domain ORDER BY 2 DESC")}
     return {"users": [dict(r) for r in rows], "by_domain": by_domain}
 
 
-# ---------------------------------------------------------------- scheduled ingest
+# ---------------------------------------------------------------- on-demand ingest
 # POST /api/admin/ingest starts a run in a background thread and returns at once (a full run takes
-# minutes, longer than most proxies allow a request). GET /api/admin/ingest reports the last run.
-# The nightly GitHub Actions workflow (.github/workflows/ingest.yml) is what calls this in production.
+# minutes). GET /api/admin/ingest reports the last run. Useful on a long-lived server (a VM); on
+# Vercel the function is frozen after the response, so the nightly GitHub Actions workflow runs
+# ingest.py directly against the database instead.
 
 _ingest_lock = threading.Lock()
 _ingest_state: dict = {"running": False, "last": None, "log": []}

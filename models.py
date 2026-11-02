@@ -5,14 +5,38 @@ computes `f1_flag` and upserts them. Keep source-specific parsing in sources/.
 """
 from __future__ import annotations
 
+import atexit
 import json
-import sqlite3
+import os
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass, field, fields, asdict
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent / "opportunities.db"
-SCHEMA_PATH = Path(__file__).parent / "schema.sql"
+import psycopg
+from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
+
+ROOT = Path(__file__).parent
+SCHEMA_PATH = ROOT / "schema.sql"
+
+
+def _load_dotenv() -> None:
+    """Read KEY=VALUE lines from ./.env into the environment (local development convenience).
+    Existing environment variables win. Production (Vercel, GitHub Actions) sets real env vars."""
+    p = ROOT / ".env"
+    if not p.exists():
+        return
+    for line in p.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
+_load_dotenv()
 
 CATEGORIES = {
     "hackathon", "conference", "fellowship", "competition", "research",
@@ -128,32 +152,46 @@ def f1_flag(o: Opportunity) -> tuple[str, str]:
     return "unknown", "Eligibility not determined yet."
 
 
-_INITIALIZED: set[Path] = set()   # db paths whose schema/migrations ran in this process
+_pool: ConnectionPool | None = None
+_pool_lock = threading.Lock()
 
 
-def connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
-    """Open a connection. WAL mode lets readers (the feed) run while ingest writes, and the
-    busy timeout makes concurrent swipes wait briefly instead of failing with 'database is locked'.
-    Schema creation + migrations run once per process, not on every request."""
-    conn = sqlite3.connect(db_path, timeout=10)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout = 10000")
-    conn.execute("PRAGMA foreign_keys = ON")
-    if db_path not in _INITIALIZED:
-        conn.execute("PRAGMA journal_mode = WAL")      # persists in the file; harmless to repeat
-        conn.executescript(SCHEMA_PATH.read_text())
-        # lightweight migration for databases created before a column existed
-        existing = {r[1] for r in conn.execute("PRAGMA table_info(opportunities)")}
-        for col, ddl in {"fields": "TEXT NOT NULL DEFAULT '[]'", "deadline_label": "TEXT",
-                         "elig_quote": "TEXT", "elig_checked_at": "TEXT"}.items():
-            if col not in existing:
-                conn.execute(f"ALTER TABLE opportunities ADD COLUMN {col} {ddl}")
-        conn.commit()
-        _INITIALIZED.add(db_path)
-    return conn
+def database_url() -> str:
+    url = os.environ.get("DATABASE_URL", "").strip()
+    if not url:
+        raise RuntimeError("DATABASE_URL is not set. Put your Postgres connection string in .env "
+                           "(local) or the host's environment (Vercel / GitHub Actions).")
+    return url
 
 
-def upsert(conn: sqlite3.Connection, o: Opportunity) -> None:
+def pool() -> ConnectionPool:
+    """One small connection pool per process. The schema is created (IF NOT EXISTS) on first use,
+    so a brand-new database works with no separate migration step."""
+    global _pool
+    with _pool_lock:
+        if _pool is None:
+            p = ConnectionPool(database_url(), min_size=0, max_size=4, open=True,
+                               kwargs={"row_factory": dict_row},
+                               check=ConnectionPool.check_connection)
+            with p.connection() as conn:
+                conn.execute(SCHEMA_PATH.read_text())
+            _pool = p
+            atexit.register(p.close)        # clean shutdown for scripts (ingest, enrich, migrations)
+    return _pool
+
+
+@contextmanager
+def connect():
+    """`with connect() as conn:` — commits on clean exit, rolls back on error, returns the
+    connection to the pool. Rows come back as dicts."""
+    with pool().connection() as conn:
+        yield conn
+
+
+Connection = psycopg.Connection
+
+
+def upsert(conn: Connection, o: Opportunity) -> None:
     flag, note = f1_flag(o)
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     row = asdict(o)
@@ -167,21 +205,21 @@ def upsert(conn: sqlite3.Connection, o: Opportunity) -> None:
     row["first_seen"] = now
     row["last_seen"] = now
     cols = ", ".join(row)
-    placeholders = ", ".join(f":{k}" for k in row)
+    placeholders = ", ".join(f"%({k})s" for k in row)
     # On conflict refresh everything except first_seen. A scraper (verified=0) must not
     # overwrite a human-verified row, but the curated CSV (verified=1) can update itself.
     updates = ", ".join(
-        f"{k}=excluded.{k}" for k in row
+        f"{k}=EXCLUDED.{k}" for k in row
         if k not in ("first_seen", "source", "source_id")
     )
     conn.execute(
         f"""INSERT INTO opportunities ({cols}) VALUES ({placeholders})
-            ON CONFLICT(source, source_id) DO UPDATE SET {updates}
-            WHERE opportunities.verified = 0 OR excluded.verified = 1""",
+            ON CONFLICT (source, source_id) DO UPDATE SET {updates}
+            WHERE opportunities.verified = 0 OR EXCLUDED.verified = 1""",
         row,
     )
     conn.execute(
-        "UPDATE opportunities SET last_seen=?, status='active' WHERE source=? AND source_id=?",
+        "UPDATE opportunities SET last_seen=%s, status='active' WHERE source=%s AND source_id=%s",
         (now, o.source, o.source_id),
     )
     apply_check(conn, o.source, o.source_id)
@@ -190,17 +228,17 @@ def upsert(conn: sqlite3.Connection, o: Opportunity) -> None:
 _OPP_FIELDS = {f.name for f in fields(Opportunity)}
 
 
-def apply_check(conn: sqlite3.Connection, source: str, source_id: str) -> bool:
+def apply_check(conn: Connection, source: str, source_id: str) -> bool:
     """Merge what enrich.py learned from the official page into the opportunity row and recompute
     its flag. Human-verified rows are never touched. Returns True if the row changed."""
-    row = conn.execute("SELECT * FROM opportunities WHERE source=? AND source_id=?", (source, source_id)).fetchone()
-    chk = conn.execute("SELECT * FROM eligibility_checks WHERE source=? AND source_id=?", (source, source_id)).fetchone()
+    row = conn.execute("SELECT * FROM opportunities WHERE source=%s AND source_id=%s", (source, source_id)).fetchone()
+    chk = conn.execute("SELECT * FROM eligibility_checks WHERE source=%s AND source_id=%s", (source, source_id)).fetchone()
     if not row or not chk or row["verified"]:
         return False
     if not chk["fetch_ok"]:
-        conn.execute("UPDATE opportunities SET elig_checked_at=NULL, elig_quote=NULL WHERE id=?", (row["id"],))
+        conn.execute("UPDATE opportunities SET elig_checked_at=NULL, elig_quote=NULL WHERE id=%s", (row["id"],))
         return False
-    data = {k: row[k] for k in _OPP_FIELDS if k in row.keys()}
+    data = {k: row[k] for k in _OPP_FIELDS if k in row}
     data["tags"] = json.loads(row["tags"] or "[]")
     data["requires_us_citizen"] = bool(row["requires_us_citizen"])
     data["requires_work_auth"] = bool(row["requires_work_auth"])
@@ -228,18 +266,18 @@ def apply_check(conn: sqlite3.Connection, source: str, source_id: str) -> bool:
         note += (" Note: the page reads as aimed at working professionals rather than enrolled students."
                  if chk["audience"] == "professionals" else " Note: the page reads as aimed at high-school students.")
     conn.execute(
-        """UPDATE opportunities SET open_to_intl=?, requires_us_citizen=?, requires_work_auth=?, f1_flag=?,
-           eligibility_note=?, elig_quote=?, elig_checked_at=? WHERE id=?""",
+        """UPDATE opportunities SET open_to_intl=%s, requires_us_citizen=%s, requires_work_auth=%s, f1_flag=%s,
+           eligibility_note=%s, elig_quote=%s, elig_checked_at=%s WHERE id=%s""",
         (o.open_to_intl, int(o.requires_us_citizen), int(o.requires_work_auth), flag, note,
          (chk["quote"] or None) if trusted else None, chk["checked_at"], row["id"]),
     )
     return True
 
 
-def expire_past_deadlines(conn: sqlite3.Connection) -> int:
+def expire_past_deadlines(conn: Connection) -> int:
     today = date.today().isoformat()
     cur = conn.execute(
-        "UPDATE opportunities SET status='expired' WHERE status='active' AND deadline IS NOT NULL AND deadline < ?",
+        "UPDATE opportunities SET status='expired' WHERE status='active' AND deadline IS NOT NULL AND deadline < %s",
         (today,),
     )
     return cur.rowcount

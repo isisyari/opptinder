@@ -1,11 +1,11 @@
-# Nightly refresh of the deployed database.
+# Nightly refresh of the hosted database. Runs the scrapers here (free GitHub minutes) and writes
+# straight to Postgres, so neither your laptop nor the web server is involved.
 #
-# Repo settings -> Secrets and variables -> Actions:
-#   APP_URL      e.g. https://your-app.fly.dev   (no trailing slash)
-#   ADMIN_TOKEN  the same value the server has in its ADMIN_TOKEN environment variable
-#
-# The server runs the scrapers itself (POST /api/admin/ingest starts a background run); this job
-# just kicks it off and then polls the status endpoint so a failure shows up red in the Actions tab.
+# Repo → Settings → Secrets and variables → Actions → New repository secret:
+#   DATABASE_URL        the same Neon connection string Vercel uses
+#   KAGGLE_API_TOKEN    optional; without it the Kaggle source is skipped
+#   PATHWAYS_OK         optional; set to 1 only after Pathways to Science says yes
+#   ANTHROPIC_API_KEY   optional; set it AND change ENRICH below to "1" to read new pages with Claude (paid)
 name: nightly ingest
 
 on:
@@ -18,34 +18,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: start ingest
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: ingest
         env:
-          APP_URL: ${{ secrets.APP_URL }}
-          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          PATHWAYS_OK: ${{ secrets.PATHWAYS_OK }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ENRICH: "0"
         run: |
-          set -euo pipefail
-          test -n "$APP_URL" || { echo "APP_URL secret is not set"; exit 1; }
-          test -n "$ADMIN_TOKEN" || { echo "ADMIN_TOKEN secret is not set"; exit 1; }
-          # enrich=true makes the server read new rows' official pages with Claude afterwards;
-          # it silently skips when the server has no ANTHROPIC_API_KEY.
-          curl --fail --silent --show-error -X POST "$APP_URL/api/admin/ingest?enrich=true" -H "X-Admin-Token: $ADMIN_TOKEN"
-          echo
-
-      - name: wait for it to finish
-        env:
-          APP_URL: ${{ secrets.APP_URL }}
-          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
-        run: |
-          set -euo pipefail
-          for i in $(seq 1 100); do
-            sleep 15
-            status=$(curl --fail --silent --show-error "$APP_URL/api/admin/ingest" -H "X-Admin-Token: $ADMIN_TOKEN")
-            if [ "$(echo "$status" | jq -r .running)" != "true" ]; then
-              echo "$status" | jq .
-              echo "$status" | jq -e '.last.error == null' > /dev/null || { echo "ingest failed"; exit 1; }
-              failed=$(echo "$status" | jq -r '[.last.sources // {} | to_entries[] | select(.value.error) | .key] | join(", ")')
-              if [ -n "$failed" ]; then echo "::warning::sources failed: $failed"; fi
-              exit 0
-            fi
-          done
-          echo "ingest still running after 25 minutes"; exit 1
+          test -n "$DATABASE_URL" || { echo "DATABASE_URL secret is not set"; exit 1; }
+          python ingest.py

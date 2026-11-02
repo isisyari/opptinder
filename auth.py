@@ -85,14 +85,14 @@ def user_from_request(request: Request):
     with connect() as conn:
         row = conn.execute(
             """SELECT u.*, s.expires_at AS session_expires FROM sessions s JOIN users u ON u.id = s.user_id
-               WHERE s.token_hash = ?""", (_sha(token),)).fetchone()
+               WHERE s.token_hash = %s""", (_sha(token),)).fetchone()
         if not row:
             return None
         if row["session_expires"] < _iso(_now()):
-            conn.execute("DELETE FROM sessions WHERE token_hash = ?", (_sha(token),))
+            conn.execute("DELETE FROM sessions WHERE token_hash = %s", (_sha(token),))
             return None
         if row["last_seen"][:10] != _iso(_now())[:10]:
-            conn.execute("UPDATE users SET last_seen = ? WHERE id = ?", (_iso(_now()), row["id"]))
+            conn.execute("UPDATE users SET last_seen = %s WHERE id = %s", (_iso(_now()), row["id"]))
         return row
 
 
@@ -140,11 +140,11 @@ def request_code(body: RequestCode, request: Request):
     code = f"{secrets.randbelow(1_000_000):06d}"
     now = _now()
     with connect() as conn:
-        conn.execute("UPDATE login_codes SET consumed = 1 WHERE email = ? AND consumed = 0", (email,))
+        conn.execute("UPDATE login_codes SET consumed = 1 WHERE email = %s AND consumed = 0", (email,))
         conn.execute(
-            "INSERT INTO login_codes (email, name, code_hash, created_at, expires_at) VALUES (?,?,?,?,?)",
+            "INSERT INTO login_codes (email, name, code_hash, created_at, expires_at) VALUES (%s,%s,%s,%s,%s)",
             (email, name, _sha(code), _iso(now), _iso(now + timedelta(minutes=CODE_MINUTES))))
-        conn.execute("DELETE FROM login_codes WHERE expires_at < ?", (_iso(now - timedelta(days=1)),))
+        conn.execute("DELETE FROM login_codes WHERE expires_at < %s", (_iso(now - timedelta(days=1)),))
     delivered = mailer.send(
         email, f"{code} is your {APP_NAME} code",
         f"Hi {name},\n\nYour sign-in code is {code}\n\nIt expires in {CODE_MINUTES} minutes. "
@@ -162,39 +162,44 @@ def verify_code(body: VerifyCode, request: Request, response: Response):
     now = _now()
     with connect() as conn:
         rec = conn.execute(
-            "SELECT * FROM login_codes WHERE email = ? AND consumed = 0 ORDER BY created_at DESC LIMIT 1",
+            "SELECT * FROM login_codes WHERE email = %s AND consumed = 0 ORDER BY created_at DESC LIMIT 1",
             (email,)).fetchone()
         if not rec or rec["expires_at"] < _iso(now):
             raise HTTPException(400, "That code has expired. Request a new one.")
+        # Raising inside `with connect()` rolls the transaction back, so commit the bookkeeping
+        # writes first or the attempt counter would never move.
         if rec["attempts"] >= CODE_ATTEMPTS:
-            conn.execute("UPDATE login_codes SET consumed = 1 WHERE id = ?", (rec["id"],))
+            conn.execute("UPDATE login_codes SET consumed = 1 WHERE id = %s", (rec["id"],))
+            conn.commit()
             raise HTTPException(400, "Too many wrong attempts. Request a new code.")
         if not secrets.compare_digest(rec["code_hash"], _sha(code)):
-            conn.execute("UPDATE login_codes SET attempts = attempts + 1 WHERE id = ?", (rec["id"],))
+            conn.execute("UPDATE login_codes SET attempts = attempts + 1 WHERE id = %s", (rec["id"],))
+            conn.commit()
             left = CODE_ATTEMPTS - rec["attempts"] - 1
             raise HTTPException(400, f"Wrong code. {left} attempt{'s' if left != 1 else ''} left." if left else
                                 "Wrong code. Request a new one.")
-        conn.execute("UPDATE login_codes SET consumed = 1 WHERE id = ?", (rec["id"],))
-        user = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+        conn.execute("UPDATE login_codes SET consumed = 1 WHERE id = %s", (rec["id"],))
+        user = conn.execute("SELECT * FROM users WHERE email = %s", (email,)).fetchone()
         if user:
-            conn.execute("UPDATE users SET last_seen = ? WHERE id = ?", (_iso(now), user["id"]))
+            conn.execute("UPDATE users SET last_seen = %s WHERE id = %s", (_iso(now), user["id"]))
             uid = user["id"]
         else:
             uid = conn.execute(
-                "INSERT INTO users (email, name, domain, created_at, last_seen) VALUES (?,?,?,?,?)",
-                (email, rec["name"], email.rsplit("@", 1)[1], _iso(now), _iso(now))).lastrowid
+                "INSERT INTO users (email, name, domain, created_at, last_seen) VALUES (%s,%s,%s,%s,%s) RETURNING id",
+                (email, rec["name"], email.rsplit("@", 1)[1], _iso(now), _iso(now))).fetchone()["id"]
         # Bring this browser's anonymous swipes into the account. Where both exist, the account's wins.
         merged = 0
         if body.anon_user and not body.anon_user.startswith("u:"):
             merged = conn.execute(
-                "INSERT OR IGNORE INTO swipes (user_id, opportunity_id, action, created_at) "
-                "SELECT ?, opportunity_id, action, created_at FROM swipes WHERE user_id = ?",
+                "INSERT INTO swipes (user_id, opportunity_id, action, created_at) "
+                "SELECT %s, opportunity_id, action, created_at FROM swipes WHERE user_id = %s "
+                "ON CONFLICT (user_id, opportunity_id) DO NOTHING",
                 (f"u:{uid}", body.anon_user)).rowcount
-            conn.execute("DELETE FROM swipes WHERE user_id = ?", (body.anon_user,))
+            conn.execute("DELETE FROM swipes WHERE user_id = %s", (body.anon_user,))
         token = secrets.token_urlsafe(32)
-        conn.execute("INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?,?,?,?)",
+        conn.execute("INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (%s,%s,%s,%s)",
                      (_sha(token), uid, _iso(now), _iso(now + timedelta(days=SESSION_DAYS))))
-        conn.execute("DELETE FROM sessions WHERE expires_at < ?", (_iso(now),))
+        conn.execute("DELETE FROM sessions WHERE expires_at < %s", (_iso(now),))
         name = user["name"] if user else rec["name"]
     _set_cookie(response, request, token)
     return {"ok": True, "user": {"name": name, "email": email}, "merged": merged}
@@ -211,6 +216,6 @@ def logout(request: Request, response: Response):
     token = request.cookies.get(COOKIE)
     if token:
         with connect() as conn:
-            conn.execute("DELETE FROM sessions WHERE token_hash = ?", (_sha(token),))
+            conn.execute("DELETE FROM sessions WHERE token_hash = %s", (_sha(token),))
     response.delete_cookie(COOKIE, path="/")
     return {"ok": True}

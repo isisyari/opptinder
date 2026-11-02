@@ -3,24 +3,31 @@
 A swipe feed of hackathons, conferences, fellowships, competitions, research, scholarships,
 on-campus jobs and accelerators, filtered for what an F-1 student can do **without CPT/OPT**.
 
-**Deploying for free:** see `deploy/README.md` (Oracle Always Free VM + Caddy + cron; only the domain costs money).
+**Deploying for free:** see `deploy/README.md` (Vercel + Neon Postgres + GitHub Actions; only the domain costs money).
 
 ## Run it
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-.venv/bin/python ingest.py          # pulls Devpost + Devfolio + seed/manual.csv into opportunities.db
+cp .env.example .env                # put your Postgres URL in DATABASE_URL (Neon's free tier; see deploy/README.md)
+.venv/bin/python ingest.py          # pulls every source into the database (tables are created on first use)
 .venv/bin/uvicorn app:app --reload  # then open http://127.0.0.1:8000
 ```
+
+The data lives in Postgres (`DATABASE_URL`), the same database locally and in production. If you still
+have an old `opportunities.db`, `scripts/migrate_sqlite_to_pg.py` copies it over once.
 
 Keyboard: `→` save, `←` pass. Drag cards on touch. "Saved" tab lists what you kept, sorted by deadline.
 
 ## Layout
 
 ```
-models.py            Opportunity dataclass, f1_flag() rule, SQLite upsert
-schema.sql           tables: opportunities (eligibility is first-class), swipes
-ingest.py            runs every source, marks past-deadline rows expired
+models.py            Opportunity dataclass, f1_flag() rule, Postgres pool + upsert
+schema.sql           tables: opportunities (eligibility is first-class), swipes, users, submissions, eligibility_checks
+ingest.py            runs every source, marks past-deadline rows expired (nightly via GitHub Actions)
+auth.py / mailer.py  passwordless sign-in (email code via Resend)
+enrich.py            reads official pages with Claude for eligibility (optional, paid)
+api/index.py         Vercel entry point; vercel.json routes everything to it
 sources/devpost.py   Devpost's own JSON endpoint (undocumented; needs browser UA)
 sources/devfolio.py  Devfolio public search endpoint
 sources/hackerearth.py HackerEarth's JSON events feed (small, all online, prize hackathons)
@@ -120,16 +127,12 @@ feed / swipe / saved call resolves to `user_id = 'u:<users.id>'` regardless of w
 
 ## Keeping the data fresh in production
 
-`POST /api/admin/ingest` (admin auth) runs `ingest.run()` in a background thread and returns immediately;
-`GET /api/admin/ingest` shows whether it's running and the last run's per-source summary and log. Add
-`?source=devpost&source=kaggle` to run a subset. Only one run at a time (second call gets 409).
+`.github/workflows/ingest.yml` runs `ingest.py` every night on GitHub's free runners and writes straight to
+the database. Repo secrets: `DATABASE_URL` (required), `KAGGLE_API_TOKEN` (optional, else Kaggle is skipped),
+`PATHWAYS_OK`, `ANTHROPIC_API_KEY` (optional). Trigger it by hand from the Actions tab.
 
-`.github/workflows/ingest.yml` calls it nightly. Set two repo secrets: `APP_URL` (your deployed origin) and
-`ADMIN_TOKEN`. The job polls until the run finishes so a failure shows red in the Actions tab. Give the server
-`KAGGLE_API_TOKEN` in its environment or the Kaggle source skips.
-
-SQLite runs in WAL mode with a 10 s busy timeout (`models.connect`), so the feed keeps serving while ingest
-writes and concurrent swipes wait instead of failing with "database is locked".
+`POST /api/admin/ingest` (admin auth) also runs ingest in a background thread for long-running hosts (a VM);
+`GET /api/admin/ingest` reports the last run. Not useful on Vercel, where the function is frozen after it responds.
 
 ## Adding your spreadsheet
 
@@ -235,7 +238,7 @@ scholarships, but personal-use-only terms).
 3. **Community submissions** with an admin approve queue (sets `verified=1`).
 4. **Ranking**: use swipe history (save/pass by category, tags) to order the feed per user.
 5. More conference sources: conf.researchr.org (academic CS), university travel-grant pages.
-6. Auth + hosting: SQLite → Postgres (Supabase/Neon), FastAPI on Railway/Fly, static UI on Vercel.
+6. ~~Auth + hosting~~ done: passwordless sign-in, Postgres on Neon, FastAPI on Vercel, ingest on GitHub Actions.
 
 ## Known source issues
 
@@ -260,10 +263,10 @@ scholarships, but personal-use-only terms).
 ## seed/eligibility_checks.csv
 
 A one-off export of the `eligibility_checks` table (116 official pages read on 2026-11-02, done by hand
-rather than through the API). The live table is in `opportunities.db`, which is gitignored, so this
-copy survives a database rebuild. To restore it into a fresh database:
+rather than through the API), kept so the results survive a database rebuild. To restore it into a fresh
+database:
 
 ```bash
-sqlite3 opportunities.db ".mode csv" ".import --skip 1 seed/eligibility_checks.csv eligibility_checks"
+psql "$DATABASE_URL" -c "\copy eligibility_checks FROM 'seed/eligibility_checks.csv' CSV HEADER"
 .venv/bin/python ingest.py manual      # any ingest re-applies the checks to the rows
 ```

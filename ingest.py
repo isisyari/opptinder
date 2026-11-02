@@ -1,10 +1,11 @@
-"""Pull every source into opportunities.db.
+"""Pull every source into the database (DATABASE_URL).
 
     python3 ingest.py            # all sources
     python3 ingest.py devpost    # one source
+    ENRICH=1 python3 ingest.py   # also read new rows' official pages with Claude (needs ANTHROPIC_API_KEY)
 
-The server also runs this on demand: POST /api/admin/ingest (see app.py), which is what the
-nightly GitHub Actions cron calls, so the deployed database refreshes without your laptop.
+In production the nightly GitHub Actions workflow (.github/workflows/ingest.yml) runs this against
+the hosted database, so the site refreshes without your laptop or the web server being involved.
 """
 from __future__ import annotations
 
@@ -48,7 +49,6 @@ def run(names: list[str] | None = None, log=print, enrich: bool = False) -> dict
 
 def _ingest(names: list[str] | None, log) -> dict:
     aggregators.reset()              # cross-site title dedupe is per run, not per process
-    conn = connect()
     summary: dict = {"sources": {}, "started": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     for name in names or list(ALL):
         if name not in ALL:
@@ -57,40 +57,39 @@ def _ingest(names: list[str] | None, log) -> dict:
             continue
         run_started = datetime.now(timezone.utc).isoformat(timespec="seconds")
         if _disabled(name):
-            hidden = conn.execute(
-                "UPDATE opportunities SET status='hidden' WHERE source=? AND status='active'", (name,)
-            ).rowcount
-            conn.commit()
+            with connect() as conn:
+                hidden = conn.execute(
+                    "UPDATE opportunities SET status='hidden' WHERE source=%s AND status='active'", (name,)
+                ).rowcount
             log(f"[{name}] disabled (opt-in); hid {hidden} rows")
             summary["sources"][name] = {"disabled": True, "hidden": hidden}
             continue
         try:
-            items = ALL[name]()
+            items = ALL[name]()                 # network work happens outside any transaction
         except Exception as e:
             log(f"[{name}] FAILED: {e}")
             log(traceback.format_exc())
             summary["sources"][name] = {"error": f"{type(e).__name__}: {e}"}
             continue
-        for o in items:
-            upsert(conn, o)
-        # Anything this source used to list but no longer does has closed. Curated rows are exempt
-        # unless the curated file itself is the source being refreshed.
-        gone = 0
-        if items or name in ALWAYS_RETIRE:
-            gone = conn.execute(
-                "UPDATE opportunities SET status='expired' WHERE source=? AND status='active' AND last_seen < ?"
-                + ("" if name in ALWAYS_RETIRE else " AND verified=0"),
-                (name, run_started),
-            ).rowcount
-        conn.commit()
+        with connect() as conn:                 # one transaction per source
+            for o in items:
+                upsert(conn, o)
+            # Anything this source used to list but no longer does has closed. Curated rows are exempt
+            # unless the curated file itself is the source being refreshed.
+            gone = 0
+            if items or name in ALWAYS_RETIRE:
+                gone = conn.execute(
+                    "UPDATE opportunities SET status='expired' WHERE source=%s AND status='active' AND last_seen < %s"
+                    + ("" if name in ALWAYS_RETIRE else " AND verified=0"),
+                    (name, run_started),
+                ).rowcount
         log(f"[{name}] upserted {len(items)}" + (f", retired {gone} no longer listed" if gone else ""))
         summary["sources"][name] = {"upserted": len(items), "retired": gone}
-    expired = expire_past_deadlines(conn)
-    conn.commit()
-    total = conn.execute("SELECT COUNT(*) FROM opportunities WHERE status='active'").fetchone()[0]
-    by_flag = {r[0]: r[1] for r in conn.execute(
-        "SELECT f1_flag, COUNT(*) FROM opportunities WHERE status='active' GROUP BY f1_flag")}
-    conn.close()
+    with connect() as conn:
+        expired = expire_past_deadlines(conn)
+        total = conn.execute("SELECT COUNT(*) AS n FROM opportunities WHERE status='active'").fetchone()["n"]
+        by_flag = {r["k"]: r["n"] for r in conn.execute(
+            "SELECT f1_flag AS k, COUNT(*) AS n FROM opportunities WHERE status='active' GROUP BY f1_flag")}
     log(f"expired {expired}; active {total}; by f1_flag: " + ", ".join(f"{k}={v}" for k, v in by_flag.items()))
     summary.update(expired=expired, active=total, by_flag=by_flag,
                    finished=datetime.now(timezone.utc).isoformat(timespec="seconds"))

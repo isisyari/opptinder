@@ -1,107 +1,84 @@
-# Deploying for free (Oracle Cloud Always Free + your domain)
+# Deploying for free: Vercel + Neon + GitHub Actions
 
-Total cost: the domain. Everything else below is free with no expiry. You need a credit card and a
-phone number to open the Oracle account; the card is identity verification and is never charged on
-Always Free resources.
+Nothing here asks for a credit card. Total cost is the domain, and even that is optional at first:
+Vercel gives you `https://<project>.vercel.app` for free.
 
-## 1. Put the code on GitHub
+| Piece | Service | Free tier | Sign in with |
+|-------|---------|-----------|--------------|
+| Web app (FastAPI + the page) | Vercel | Hobby plan, non-commercial | GitHub |
+| Database (Postgres) | Neon | 0.5 GB, auto-sleeps when idle and wakes on the next request | GitHub |
+| Nightly scraping | GitHub Actions | 2,000 min/month; a run takes ~3 | already have it |
+| Sign-in emails | Resend | ~100/day | GitHub or email |
 
-```bash
-gh repo create f1-opportunities --public --source=. --push     # or create the repo on github.com and `git push`
-```
+## 1. Neon: create the database (5 minutes)
 
-Public is simplest (the server clones it without credentials). Nothing secret is in the repo: the
-database is gitignored and all keys live in `/etc/f1.env` on the server.
+1. Go to https://neon.tech → Sign up with GitHub → **Create project**. Name it `f1-opportunities`,
+   pick the region closest to your users (US East), leave the rest default.
+2. On the project dashboard click **Connect** and copy the connection string. Make sure
+   **Pooled connection** is on (the host contains `-pooler`); it looks like
+   `postgresql://neondb_owner:npg_xxx@ep-xxx-pooler.us-east-2.aws.neon.tech/neondb?sslmode=require`.
+   That string is `DATABASE_URL` everywhere below. Treat it like a password.
 
-## 2. Buy the domain (~$10/yr)
-
-Porkbun or Cloudflare Registrar sell at cost. A `.org` or `.com` looks right to a university office
-forwarding your link. You'll add DNS records in step 4.
-
-## 3. Create the free VM
-
-1. Sign up at cloud.oracle.com (choose a home region near your users; US East/Ashburn is fine).
-2. Compute → Instances → **Create instance**.
-   - Image: **Ubuntu 24.04** (minimal is fine).
-   - Shape: **VM.Standard.E2.1.Micro** (Always Free, 1 GB RAM: plenty for this app) or, if available,
-     `VM.Standard.A1.Flex` (ARM, up to 2 OCPU / 12 GB free). ARM is often "out of capacity"; take the Micro.
-   - Networking: leave defaults; make sure **Assign a public IPv4 address** is on.
-   - SSH keys: **Generate a key pair for me**, download the private key.
-3. Create. Note the **Public IP**.
-4. Open the web ports in the cloud firewall: Instance page → Virtual cloud network → Subnet →
-   Security list → **Add Ingress Rules**: source `0.0.0.0/0`, protocol TCP, destination port `80`;
-   repeat for `443`. (The setup script opens the VM's own iptables for you.)
-
-## 4. DNS
-
-At your registrar add two records pointing at the VM's public IP:
-
-| Type | Name | Value |
-|------|------|-------|
-| A | `@`   | `<public IP>` |
-| A | `www` | `<public IP>` |
-
-Caddy gets a free HTTPS certificate automatically once these resolve (a few minutes, up to an hour).
-
-## No domain yet?
-
-Skip steps 2 and 4 and pass the VM's public IP instead of a domain in step 5. The site runs on
-`http://<public IP>` (plain HTTP, no certificate). Everything works, including sign-in. When you buy the
-domain, add the DNS records and re-run the same script with the domain; it switches to HTTPS in place.
-
-## 5. Set up the server (one command)
+## 2. Load the data from your laptop (once)
 
 ```bash
-chmod 600 ~/Downloads/ssh-key-*.key
-ssh -i ~/Downloads/ssh-key-*.key ubuntu@<public IP>
-
-# on the server:
-curl -fsSL https://raw.githubusercontent.com/<you>/<repo>/main/deploy/setup.sh -o setup.sh
-sudo bash setup.sh yourdomain.org https://github.com/<you>/<repo>.git
+cd ~/Desktop/web
+echo 'DATABASE_URL=postgresql://...paste it...' > .env       # .env is gitignored
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python scripts/migrate_sqlite_to_pg.py            # copies opportunities.db into Neon
+.venv/bin/uvicorn app:app --reload                          # http://127.0.0.1:8000 now runs on Neon
 ```
 
-It installs Python and Caddy, clones the repo to `/opt/f1`, writes `/etc/f1.env` with a generated
-`ADMIN_TOKEN`, starts the app as a systemd service, configures HTTPS, and schedules the nightly ingest.
+The migrate script creates the tables and copies every opportunity, the 116 page-read eligibility
+results, your swipes and your account. After this the local SQLite file is no longer used.
 
-Then copy your laptop's database up (it contains the 116 page-read eligibility results and your swipes):
+## 3. Vercel: deploy the app (5 minutes)
 
-```bash
-# on your laptop
-scp -i ~/Downloads/ssh-key-*.key opportunities.db ubuntu@<public IP>:/tmp/
-# on the server
-sudo mv /tmp/opportunities.db /opt/f1/ && sudo chown f1:f1 /opt/f1/opportunities.db && sudo systemctl restart f1
-```
+1. https://vercel.com → Sign up with GitHub → **Add New… → Project** → Import `isisyari/opptinder`.
+2. Leave Framework Preset as **Other** and the root directory as is. Vercel finds `api/index.py` and
+   `vercel.json` on its own.
+3. Open **Environment Variables** and add:
+   - `DATABASE_URL` = the Neon string
+   - `ADMIN_TOKEN` = a long random string (run `openssl rand -base64 32` in your terminal)
+4. **Deploy**. About a minute later you get `https://opptinder-xxx.vercel.app`. Open it, swipe,
+   open `/admin` and paste the admin token.
 
-Open `https://yourdomain.org`. Swipe. Open `https://yourdomain.org/admin`, paste the token from
-`sudo grep ADMIN_TOKEN /etc/f1.env`.
+Every `git push` to `main` redeploys automatically from now on.
 
-## 6. Keys (add as you get them)
+## 4. GitHub Actions: nightly refresh (2 minutes)
 
-```bash
-sudo nano /etc/f1.env       # then: sudo systemctl restart f1
-```
+Repo → **Settings → Secrets and variables → Actions → New repository secret**:
 
-- `KAGGLE_API_TOKEN` so the nightly ingest includes Kaggle (kaggle.com → Settings → API).
-- `RESEND_API_KEY` and `RESEND_FROM` so sign-in codes are emailed (resend.com, free; verify your domain
-  there by adding the DNS records it shows you). Until then codes print to `journalctl -u f1`.
-- `PATHWAYS_OK=1` only after Pathways to Science replies yes to the email in `docs/outreach.md`.
+- `DATABASE_URL` = the same Neon string
+- `KAGGLE_API_TOKEN` = optional, from kaggle.com → Settings → API
 
-## 7. Day-to-day
+Then **Actions → nightly ingest → Run workflow** once to confirm it goes green. It runs every day at
+09:17 UTC after that and writes straight into Neon, so the site is always fresh.
 
-| Task | Command (on the server) |
-|------|-------------------------|
-| Deploy a change after `git push` | `sudo bash /opt/f1/deploy/update.sh` |
-| App logs | `sudo journalctl -u f1 -f` |
-| Last ingest | `tail -50 /var/log/f1-ingest.log` |
-| Run ingest now | `sudo -u f1 bash -c 'cd /opt/f1 && set -a && . /etc/f1.env && set +a && .venv/bin/python ingest.py'` |
-| Back up the database | from laptop: `scp -i <key> ubuntu@<ip>:/opt/f1/opportunities.db ./backup-$(date +%F).db` |
+## 5. Later: domain and email
 
-The GitHub Actions workflow in `.github/workflows/ingest.yml` is optional with this setup (cron on the
-VM does the same job). Leave it disabled unless you'd rather see ingest results in the Actions tab.
+- **Domain**: buy it (Porkbun or Cloudflare Registrar, ~$10/yr), then Vercel → project → **Settings →
+  Domains → Add**. Vercel shows the two DNS records to add at the registrar and handles HTTPS itself.
+- **Sign-in emails**: https://resend.com → API key. In Vercel add `RESEND_API_KEY`, and once you own
+  the domain and verified it in Resend, `RESEND_FROM` = `F-1 Opportunities <hello@yourdomain>`. Until
+  then sign-in codes print to the Vercel function logs (project → Logs), which is fine for testing.
+- `PATHWAYS_OK=1` (Vercel and Actions) only after Pathways to Science says yes.
 
-## If Oracle signup fails or has no capacity
+## Day to day
 
-Google Cloud's `e2-micro` in a US region is also always free (same card-on-file rule); the script works
-unchanged on its Ubuntu image, and GCP's firewall is a checkbox ("Allow HTTP/HTTPS traffic") at VM
-creation. Failing both, the cheapest paid option that keeps SQLite on disk is a Fly.io machine with a
-volume at roughly $2-3/month.
+| Task | How |
+|------|-----|
+| Ship a change | `git push` |
+| See server logs | Vercel → project → **Logs** |
+| Run ingest now | GitHub → **Actions → nightly ingest → Run workflow** |
+| Query the data | Neon → **SQL Editor** (`SELECT count(*) FROM users;`) |
+| Back up | Neon keeps 24h of history on the free tier; for a file: `pg_dump "$DATABASE_URL" > backup.sql` |
+
+## Things to know
+
+- Neon's free compute sleeps after 5 idle minutes. The first visit after that takes a second or two
+  longer while it wakes; nothing is lost.
+- Vercel's rate limiter and the ingest-status endpoint are per function instance, so the "running"
+  flag of `POST /api/admin/ingest` isn't reliable there. Use the GitHub workflow instead.
+- The old VM route (`deploy/setup.sh`, Oracle or any Ubuntu box) still works if you ever want a
+  long-running server: put `DATABASE_URL` in `/etc/f1.env` and everything else is unchanged.

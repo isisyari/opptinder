@@ -48,6 +48,7 @@ echo "== secrets file $ENV"
 if [ ! -f $ENV ]; then
   cat > $ENV <<EOF
 # Loaded by the f1 systemd service. chmod 600. Edit, then: sudo systemctl restart f1
+DATABASE_URL=postgresql://...        # REQUIRED: your Neon (or any Postgres) connection string
 ADMIN_TOKEN=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
 # KAGGLE_API_TOKEN=KGAT_...
 # RESEND_API_KEY=re_...
@@ -109,9 +110,7 @@ touch /var/log/f1-ingest.log && chown f1:f1 /var/log/f1-ingest.log
 
 echo
 echo "Done. The site is at $URL  (admin: $URL/admin)"
-echo "  1. If you used a domain: make sure its A records point at this server's public IP."
-echo "  2. Copy your laptop's database here (it holds the page-read eligibility results):"
-echo "       scp opportunities.db ubuntu@<ip>:/tmp/ && sudo mv /tmp/opportunities.db $APP/ && sudo chown f1:f1 $APP/opportunities.db && sudo systemctl restart $SVC"
-echo "     or start fresh:  sudo -u f1 bash -c 'cd $APP && .venv/bin/python ingest.py'"
+echo "  1. Put your Postgres connection string in $ENV (DATABASE_URL=...) and: sudo systemctl restart $SVC"
+echo "  2. If you used a domain: make sure its A records point at this server's public IP."
 echo "  3. Admin token:  sudo grep ADMIN_TOKEN $ENV"
 echo "  4. Logs:  sudo journalctl -u $SVC -f      ingest:  tail -f /var/log/f1-ingest.log"

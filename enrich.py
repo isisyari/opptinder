@@ -175,22 +175,45 @@ def candidates(conn, *, source: str | None, recheck_days: int, limit: int, all_r
         SELECT o.* FROM opportunities o
         LEFT JOIN eligibility_checks c ON c.source = o.source AND c.source_id = o.source_id
         WHERE o.status = 'active' AND o.verified = 0 AND o.f1_flag IN ('likely_ok', 'check_dso')
-          AND (c.source_id IS NULL OR c.checked_at < :stale)
+          AND (c.source_id IS NULL OR c.checked_at < %(stale)s)
     """
     params: dict = {"stale": stale, "limit": limit}
     if not all_rows:
         sql += " AND o.open_to_intl = 'unknown'"
     if source:
-        sql += " AND o.source = :source"
+        sql += " AND o.source = %(source)s"
         params["source"] = source
-    sql += " ORDER BY (o.deadline IS NULL), o.deadline, o.id LIMIT :limit"
+    sql += " ORDER BY (o.deadline IS NULL), o.deadline, o.id LIMIT %(limit)s"
     return conn.execute(sql, params).fetchall()
+
+
+UPSERT_CHECK = """
+    INSERT INTO eligibility_checks
+        (source, source_id, checked_url, fetch_ok, international_ok, restriction, audience, quote, note,
+         is_paid_job, confidence, model, checked_at)
+    VALUES (%(source)s, %(source_id)s, %(checked_url)s, %(fetch_ok)s, %(international_ok)s, %(restriction)s,
+            %(audience)s, %(quote)s, %(note)s, %(is_paid_job)s, %(confidence)s, %(model)s, %(checked_at)s)
+    ON CONFLICT (source, source_id) DO UPDATE SET
+        checked_url=EXCLUDED.checked_url, fetch_ok=EXCLUDED.fetch_ok, international_ok=EXCLUDED.international_ok,
+        restriction=EXCLUDED.restriction, audience=EXCLUDED.audience, quote=EXCLUDED.quote, note=EXCLUDED.note,
+        is_paid_job=EXCLUDED.is_paid_job, confidence=EXCLUDED.confidence, model=EXCLUDED.model,
+        checked_at=EXCLUDED.checked_at"""
+
+
+def save_check(conn, row, *, url, fetch_ok: bool, check=None, now: str) -> None:
+    conn.execute(UPSERT_CHECK, {
+        "source": row["source"], "source_id": row["source_id"], "checked_url": url, "fetch_ok": int(fetch_ok),
+        "international_ok": check.international_ok if check else "unknown",
+        "restriction": check.restriction if check else None, "audience": check.audience if check else None,
+        "quote": (check.quote.strip() or None) if check else None, "note": (check.note.strip() or None) if check else None,
+        "is_paid_job": int(check.is_paid_job) if check else 0, "confidence": check.confidence if check else None,
+        "model": MODEL, "checked_at": now})
 
 
 def run(*, limit: int = 300, source: str | None = None, recheck_days: int = 90, dry_run: bool = False,
         all_rows: bool = False, log=print) -> dict:
-    conn = connect()
-    rows = candidates(conn, source=source, recheck_days=recheck_days, limit=limit, all_rows=all_rows)
+    with connect() as conn:
+        rows = candidates(conn, source=source, recheck_days=recheck_days, limit=limit, all_rows=all_rows)
     log(f"{len(rows)} rows to check" + (" (dry run)" if dry_run else f" with {MODEL}"))
     client = None
     if not dry_run and rows:
@@ -205,12 +228,9 @@ def run(*, limit: int = 300, source: str | None = None, recheck_days: int = 90, 
             tally["unreachable"] += 1
             log(f"  [{row['source']}] {row['title'][:60]!r}: page unreachable")
             if not dry_run:
-                conn.execute(
-                    """INSERT OR REPLACE INTO eligibility_checks
-                       (source, source_id, checked_url, fetch_ok, international_ok, model, checked_at)
-                       VALUES (?,?,?,0,'unknown',?,?)""",
-                    (row["source"], row["source_id"], row["url"], MODEL, now))
-                conn.commit()
+                with connect() as conn:
+                    save_check(conn, row, url=row["url"], fetch_ok=False, now=now)
+                    apply_check(conn, row["source"], row["source_id"])
             continue
         if dry_run:
             log(f"  [{row['source']}] {row['title'][:60]!r}: {len(text)} chars from {url}")
@@ -220,22 +240,14 @@ def run(*, limit: int = 300, source: str | None = None, recheck_days: int = 90, 
         tally["input_tokens"] += u.get("input_tokens") or 0
         tally["cache_read_tokens"] += u.get("cache_read_input_tokens") or 0
         tally["output_tokens"] += u.get("output_tokens") or 0
-        conn.execute(
-            """INSERT OR REPLACE INTO eligibility_checks
-               (source, source_id, checked_url, fetch_ok, international_ok, restriction, audience, quote, note,
-                is_paid_job, confidence, model, checked_at)
-               VALUES (?,?,?,1,?,?,?,?,?,?,?,?,?)""",
-            (row["source"], row["source_id"], url, check.international_ok, check.restriction, check.audience,
-             check.quote.strip() or None, check.note.strip() or None, int(check.is_paid_job), check.confidence,
-             MODEL, now))
-        changed = apply_check(conn, row["source"], row["source_id"])
-        conn.commit()
+        with connect() as conn:
+            save_check(conn, row, url=url, fetch_ok=True, check=check, now=now)
+            changed = apply_check(conn, row["source"], row["source_id"])
         tally["checked"] += 1
         tally[check.international_ok] += 1
         tally["applied"] += int(changed)
         log(f"  [{row['source']}] {row['title'][:60]!r}: {check.international_ok}/{check.confidence}"
             + (f" paid-job" if check.is_paid_job else "") + (f" · “{check.quote[:90]}”" if check.quote else ""))
-    conn.close()
     log("done: " + ", ".join(f"{k}={v}" for k, v in tally.items()))
     return tally
 

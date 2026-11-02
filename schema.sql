@@ -1,9 +1,10 @@
--- Opportunities feed for F-1 students.
+-- Opportunities feed for F-1 students (PostgreSQL; Neon's free tier in production).
 -- Eligibility is first-class: the product's whole value is knowing whether an
 -- international student on F-1 can actually take part without CPT/OPT.
+-- Dates are ISO text ('2026-11-02'), timestamps ISO-8601 text; 0/1 integers stand in for booleans.
 
 CREATE TABLE IF NOT EXISTS opportunities (
-    id                  INTEGER PRIMARY KEY,
+    id                  SERIAL PRIMARY KEY,
     source              TEXT NOT NULL,          -- devpost | devfolio | manual | ...
     source_id           TEXT NOT NULL,          -- id inside that source
     url                 TEXT NOT NULL,
@@ -36,6 +37,8 @@ CREATE TABLE IF NOT EXISTS opportunities (
     open_to_intl        TEXT NOT NULL DEFAULT 'unknown',  -- yes | no | unknown (explicit statement from organizer)
     f1_flag             TEXT NOT NULL DEFAULT 'unknown',  -- likely_ok | check_dso | not_eligible | unknown  (computed)
     eligibility_note    TEXT,                   -- human-readable reason shown on the card
+    elig_quote          TEXT,                   -- verbatim sentence from the official page (enrich.py)
+    elig_checked_at     TEXT,                   -- when that page was read
 
     -- bookkeeping
     status              TEXT NOT NULL DEFAULT 'active',   -- active | expired | hidden
@@ -49,11 +52,12 @@ CREATE TABLE IF NOT EXISTS opportunities (
 CREATE INDEX IF NOT EXISTS idx_opp_deadline ON opportunities (deadline);
 CREATE INDEX IF NOT EXISTS idx_opp_category ON opportunities (category);
 CREATE INDEX IF NOT EXISTS idx_opp_flag     ON opportunities (f1_flag);
+CREATE INDEX IF NOT EXISTS idx_opp_status   ON opportunities (status);
 
 -- Community submissions. Anyone can submit; an admin approves, which creates a
 -- verified opportunity with source='community' and source_id=submission id.
 CREATE TABLE IF NOT EXISTS submissions (
-    id              INTEGER PRIMARY KEY,
+    id              SERIAL PRIMARY KEY,
     payload         TEXT NOT NULL,              -- JSON of the Opportunity fields as submitted (or as edited on approval)
     submitted_by    TEXT,                       -- optional email / handle
     note            TEXT,                       -- submitter's note to the reviewer
@@ -85,7 +89,7 @@ CREATE TABLE IF NOT EXISTS eligibility_checks (
 -- Accounts (passwordless: name + email, verified by a 6-digit code sent to the address).
 -- Signed-in users' swipes are stored under user_id = 'u:<users.id>'; anonymous browsers use their UUID.
 CREATE TABLE IF NOT EXISTS users (
-    id              INTEGER PRIMARY KEY,
+    id              SERIAL PRIMARY KEY,
     email           TEXT NOT NULL UNIQUE,       -- lowercased
     name            TEXT NOT NULL,
     domain          TEXT NOT NULL,              -- part after @, for "which schools use this"
@@ -94,7 +98,7 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 CREATE TABLE IF NOT EXISTS login_codes (
-    id              INTEGER PRIMARY KEY,
+    id              SERIAL PRIMARY KEY,
     email           TEXT NOT NULL,
     name            TEXT NOT NULL,              -- carried to users.name on first sign-in
     code_hash       TEXT NOT NULL,              -- sha256 of the 6 digits; the code itself is never stored
@@ -112,12 +116,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     expires_at      TEXT NOT NULL
 );
 
--- Swipe log. user_id is a free string so this works before you add auth.
+-- Swipe log. user_id is a free string: anonymous UUID or 'u:<users.id>'.
 CREATE TABLE IF NOT EXISTS swipes (
-    id              INTEGER PRIMARY KEY,
+    id              SERIAL PRIMARY KEY,
     user_id         TEXT NOT NULL DEFAULT 'local',
     opportunity_id  INTEGER NOT NULL REFERENCES opportunities(id),
     action          TEXT NOT NULL,              -- save | pass
     created_at      TEXT NOT NULL,
     UNIQUE (user_id, opportunity_id)
 );
+CREATE INDEX IF NOT EXISTS idx_swipes_user ON swipes (user_id);
