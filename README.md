@@ -3,6 +3,8 @@
 A swipe feed of hackathons, conferences, fellowships, competitions, research, scholarships,
 on-campus jobs and accelerators, filtered for what an F-1 student can do **without CPT/OPT**.
 
+**Deploying for free:** see `deploy/README.md` (Oracle Always Free VM + Caddy + cron; only the domain costs money).
+
 ## Run it
 
 ```bash
