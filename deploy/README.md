@@ -35,8 +35,7 @@ results, your swipes and your account. After this the local SQLite file is no lo
 ## 3. Vercel: deploy the app (5 minutes)
 
 1. https://vercel.com → Sign up with GitHub → **Add New… → Project** → Import `isisyari/opptinder`.
-2. Leave Framework Preset as **Other** and the root directory as is. Vercel finds `api/index.py` and
-   `vercel.json` on its own.
+2. Vercel detects the **FastAPI** preset (it finds the `app` in `app.py`); leave it and the root directory as is.
 3. Open **Environment Variables** and add:
    - `DATABASE_URL` = the Neon string
    - `ADMIN_TOKEN` = a long random string (run `openssl rand -base64 32` in your terminal)

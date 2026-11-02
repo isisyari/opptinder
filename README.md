@@ -27,7 +27,7 @@ schema.sql           tables: opportunities (eligibility is first-class), swipes,
 ingest.py            runs every source, marks past-deadline rows expired (nightly via GitHub Actions)
 auth.py / mailer.py  passwordless sign-in (email code via Resend)
 enrich.py            reads official pages with Claude for eligibility (optional, paid)
-api/index.py         Vercel entry point; vercel.json routes everything to it
+vercel.json          Vercel's FastAPI preset runs app.py directly; this only sets the function timeout
 sources/devpost.py   Devpost's own JSON endpoint (undocumented; needs browser UA)
 sources/devfolio.py  Devfolio public search endpoint
 sources/hackerearth.py HackerEarth's JSON events feed (small, all online, prize hackathons)
