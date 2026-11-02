@@ -170,8 +170,10 @@ def pool() -> ConnectionPool:
     global _pool
     with _pool_lock:
         if _pool is None:
+            # prepare_threshold=None: no server-side prepared statements, so the pooled
+            # (pgbouncer-style) connection strings from Neon and Supabase both work.
             p = ConnectionPool(database_url(), min_size=0, max_size=4, open=True,
-                               kwargs={"row_factory": dict_row},
+                               kwargs={"row_factory": dict_row, "prepare_threshold": None},
                                check=ConnectionPool.check_connection)
             with p.connection() as conn:
                 conn.execute(SCHEMA_PATH.read_text())
